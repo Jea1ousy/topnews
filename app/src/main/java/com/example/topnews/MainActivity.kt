@@ -21,10 +21,10 @@ class MainActivity : ComponentActivity() {
             TopnewsTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Greeting(
-                        name = "Android",
+                        name = "Google",
                         modifier = Modifier.padding(innerPadding)
                     )
-                }   
+                }
             }
         }
     }
@@ -42,6 +42,6 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
 @Composable
 fun GreetingPreview() {
     TopnewsTheme {
-        Greeting("Android")
+        Greeting("Google")
     }
 }
