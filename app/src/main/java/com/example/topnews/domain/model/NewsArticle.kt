@@ -6,6 +6,12 @@ data class NewsArticle(
     val source: String,
     val commentCount: Int,
     val timeText: String,
+    val link: String = "",
+    val description: String = "",
+    val content: String = "",
+    val html: String = "",
+    val channelId: String = "",
+    val channelName: String = "",
     val imageUrl: String? = null,
     val videoDuration: String? = null,
     val isTop: Boolean = false
