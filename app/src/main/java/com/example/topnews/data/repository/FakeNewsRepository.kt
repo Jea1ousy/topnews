@@ -1,14 +1,18 @@
 package com.example.topnews.data.repository
 
 import com.example.topnews.domain.model.NewsArticle
+import com.example.topnews.domain.model.NewsPage
 import com.example.topnews.domain.repository.NewsRepository
 import kotlinx.coroutines.delay
 
 class FakeNewsRepository : NewsRepository {
-    override suspend fun getTopNews(): List<NewsArticle> {
+    override suspend fun getTopNews(
+        page: Int,
+        pageSize: Int
+    ): NewsPage {
         delay(300)
 
-        return listOf(
+        val articles = listOf(
             NewsArticle(
                 id = "1",
                 title = "习近平主席关于中非合作重要论述",
@@ -57,6 +61,13 @@ class FakeNewsRepository : NewsRepository {
                 commentCount = 65,
                 timeText = "42分钟前"
             )
+        )
+
+        return NewsPage(
+            articles = articles,
+            page = page,
+            totalPage = 1,
+            totalCount = articles.size
         )
     }
 }

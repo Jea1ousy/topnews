@@ -1,6 +1,7 @@
 package com.example.topnews.ui.screen.home.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,6 +31,7 @@ private val HeaderRed = Color(0xFFFF4F57)
 @Composable
 fun HomeHeader(
     uiState: HomeUiState,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -90,10 +92,12 @@ fun HomeHeader(
                 )
             }
             Text(
-                text = "+",
-                modifier = Modifier.padding(start = 12.dp),
+                text = "↻",
+                modifier = Modifier
+                    .clickable { onRefresh() }
+                    .padding(start = 12.dp),
                 color = Color.White,
-                fontSize = 28.sp
+                fontSize = 26.sp
             )
         }
 

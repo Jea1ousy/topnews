@@ -1,7 +1,10 @@
 package com.example.topnews.domain.repository
 
-import com.example.topnews.domain.model.NewsArticle
+import com.example.topnews.domain.model.NewsPage
 
 interface NewsRepository {
-    suspend fun getTopNews(): List<NewsArticle>
+    suspend fun getTopNews(
+        page: Int,
+        pageSize: Int
+    ): NewsPage
 }

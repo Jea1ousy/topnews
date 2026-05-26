@@ -5,6 +5,7 @@ import com.example.topnews.data.remote.dto.AliChannelDto
 import com.example.topnews.data.remote.dto.AliNewsDto
 import com.example.topnews.data.remote.NewsApi
 import com.example.topnews.domain.model.NewsArticle
+import com.example.topnews.domain.model.NewsPage
 import com.example.topnews.domain.repository.NewsRepository
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
@@ -15,7 +16,10 @@ class AliNewsRepository(
     private val appCode: String = BuildConfig.ALI_NEWS_APPCODE,
     private val baseUrl: String = BuildConfig.ALI_NEWS_BASE_URL
 ) : NewsRepository {
-    override suspend fun getTopNews(): List<NewsArticle> {
+    override suspend fun getTopNews(
+        page: Int,
+        pageSize: Int
+    ): NewsPage {
         require(appCode.isNotBlank()) { "缺少 ALI_NEWS_APPCODE，请在 local.properties 中配置" }
         require(baseUrl.isNotBlank()) { "缺少 ALI_NEWS_BASE_URL，请在 local.properties 中配置" }
 
@@ -27,7 +31,7 @@ class AliNewsRepository(
             }
 
             response.data?.items.orEmpty()
-                .firstOrNull { it.name == "国内焦点" }
+                .firstOrNull { it.name == "国内最新" }
                 ?: response.data?.items.orEmpty().firstOrNull()
                 ?: throw IllegalStateException("频道接口返回为空：msg=${response.msg.orEmpty()}")
         }
@@ -36,8 +40,8 @@ class AliNewsRepository(
             authorization = authorization,
             channelId = channel.channelId.orEmpty(),
             channelName = channel.name.orEmpty(),
-            page = "1",
-            pageSize = "20"
+            page = page.toString(),
+            pageSize = pageSize.toString()
         )
 
         if (response.code != 200 && response.code != 202) {
@@ -49,7 +53,12 @@ class AliNewsRepository(
             throw IllegalStateException("新闻接口返回为空：频道=${channel.displayName()}, msg=${response.msg.orEmpty()}")
         }
 
-        return articles
+        return NewsPage(
+            articles = articles,
+            page = response.data?.page ?: page,
+            totalPage = response.data?.totalPage ?: page,
+            totalCount = response.data?.totalCount ?: articles.size
+        )
     }
 
     private fun AliChannelDto.displayName(): String {

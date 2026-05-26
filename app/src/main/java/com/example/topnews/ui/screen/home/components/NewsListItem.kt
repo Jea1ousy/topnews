@@ -18,12 +18,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.topnews.domain.model.NewsArticle
 
 @Composable
@@ -89,22 +90,18 @@ private fun ArticleMeta(article: NewsArticle) {
 
 @Composable
 private fun NewsThumbnail(article: NewsArticle) {
-    val colors = when (article.imageUrl) {
-        "speaker" -> listOf(Color(0xFF1D2433), Color(0xFFD7C2B1))
-        "train" -> listOf(Color(0xFF9DB7C7), Color(0xFF536F57))
-        else -> listOf(Color(0xFFE0F0D8), Color(0xFF61845B))
-    }
-
     Box(
         modifier = Modifier
             .size(width = 112.dp, height = 76.dp)
             .clip(RoundedCornerShape(2.dp))
-            .background(Brush.linearGradient(colors))
+            .background(Color(0xFFEDEDED))
     ) {
-        Box(
+        AsyncImage(
+            model = article.imageUrl,
+            contentDescription = article.title,
             modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.06f))
+                .fillMaxSize(),
+            contentScale = ContentScale.Crop
         )
 
         if (article.videoDuration != null) {

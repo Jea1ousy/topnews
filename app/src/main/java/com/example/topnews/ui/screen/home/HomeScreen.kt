@@ -33,7 +33,10 @@ fun HomeScreen(
                 .background(Color.White)
                 .padding(innerPadding)
         ) {
-            HomeHeader(uiState = uiState)
+            HomeHeader(
+                uiState = uiState,
+                onRefresh = viewModel::refresh
+            )
             CategoryTabs(
                 categories = uiState.categories,
                 selectedCategory = uiState.selectedCategory,
@@ -42,8 +45,14 @@ fun HomeScreen(
             NewsList(
                 articles = uiState.articles,
                 isLoading = uiState.isLoading,
+                isLoadingMore = uiState.isLoadingMore,
+                hasMore = uiState.hasMore,
                 error = uiState.error,
-                onRetry = viewModel::loadTopNews,
+                lastUpdatedText = uiState.lastUpdatedText,
+                onRetry = viewModel::refresh,
+                onLoadMore = viewModel::loadMore,
+                isRefreshing = uiState.isRefreshing,
+                onRefresh = viewModel::refresh,
                 modifier = Modifier.weight(1f)
             )
         }

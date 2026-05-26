@@ -12,5 +12,10 @@ data class HomeUiState(
     val categories: List<String> = listOf("关注", "推荐", "热榜", "新时代", "小说", "视频"),
     val articles: List<NewsArticle> = emptyList(),
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val isRefreshing: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val hasMore: Boolean = true,
+    val currentPage: Int = 1,
+    val lastUpdatedText: String = ""
 )
