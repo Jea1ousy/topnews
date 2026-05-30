@@ -2,7 +2,7 @@ package com.example.topnews.ui.screen.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.topnews.data.repository.AliNewsRepository
+import com.example.topnews.data.repository.TopNewsBackendRepository
 import com.example.topnews.domain.repository.NewsRepository
 import java.net.UnknownHostException
 import java.text.SimpleDateFormat
@@ -15,21 +15,35 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class HomeViewModel : ViewModel() {
-    private val repository: NewsRepository = AliNewsRepository()
+    private val repository: NewsRepository = TopNewsBackendRepository()
     private val pageSize = 20
 
     private val _uiState = MutableStateFlow(HomeUiState(isLoading = true))
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     init {
-        refresh()
+        loadFirstPage(forceRefresh = false)
     }
 
     fun selectCategory(category: String) {
-        _uiState.update { it.copy(selectedCategory = category) }
+        if (_uiState.value.selectedCategory == category) return
+        _uiState.update {
+            it.copy(
+                selectedCategory = category,
+                articles = emptyList(),
+                currentPage = 1,
+                hasMore = true,
+                error = null
+            )
+        }
+        loadFirstPage(forceRefresh = false)
     }
 
     fun refresh() {
+        loadFirstPage(forceRefresh = true)
+    }
+
+    private fun loadFirstPage(forceRefresh: Boolean) {
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -39,17 +53,27 @@ class HomeViewModel : ViewModel() {
                 )
             }
 
-            runCatching { repository.getTopNews(page = 1, pageSize = pageSize) }
+            val category = _uiState.value.selectedCategory
+            runCatching {
+                repository.getTopNews(
+                    page = 1,
+                    pageSize = pageSize,
+                    category = category,
+                    forceRefresh = forceRefresh,
+                    excludeIds = if (forceRefresh) _uiState.value.articles.map { it.id } else emptyList()
+                )
+            }
                 .onSuccess { newsPage ->
                     _uiState.update {
+                        val keepCurrent = forceRefresh && it.articles.isNotEmpty() && newsPage.articles.isEmpty()
                         it.copy(
-                            articles = newsPage.articles,
+                            articles = if (keepCurrent) it.articles else newsPage.articles,
                             isLoading = false,
                             isRefreshing = false,
                             isLoadingMore = false,
-                            hasMore = newsPage.hasMore,
-                            currentPage = newsPage.page,
-                            lastUpdatedText = "刷新于 ${currentTimeText()}",
+                            hasMore = if (keepCurrent) it.hasMore else newsPage.hasMore,
+                            currentPage = if (keepCurrent) it.currentPage else newsPage.page,
+                            lastUpdatedText = if (keepCurrent) "暂无新内容 ${currentTimeText()}" else "刷新于 ${currentTimeText()}",
                             error = null
                         )
                     }
@@ -75,7 +99,16 @@ class HomeViewModel : ViewModel() {
             val nextPage = _uiState.value.currentPage + 1
             _uiState.update { it.copy(isLoadingMore = true, error = null) }
 
-            runCatching { repository.getTopNews(page = nextPage, pageSize = pageSize) }
+            val category = _uiState.value.selectedCategory
+            runCatching {
+                repository.getTopNews(
+                    page = nextPage,
+                    pageSize = pageSize,
+                    category = category,
+                    forceRefresh = false,
+                    excludeIds = emptyList()
+                )
+            }
                 .onSuccess { nextPageResult ->
                     _uiState.update {
                         it.copy(

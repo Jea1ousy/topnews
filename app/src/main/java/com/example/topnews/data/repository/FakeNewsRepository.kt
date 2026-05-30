@@ -8,7 +8,10 @@ import kotlinx.coroutines.delay
 class FakeNewsRepository : NewsRepository {
     override suspend fun getTopNews(
         page: Int,
-        pageSize: Int
+        pageSize: Int,
+        category: String,
+        forceRefresh: Boolean,
+        excludeIds: List<String>
     ): NewsPage {
         delay(300)
 

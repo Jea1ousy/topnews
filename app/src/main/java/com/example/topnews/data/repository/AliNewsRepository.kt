@@ -18,7 +18,10 @@ class AliNewsRepository(
 ) : NewsRepository {
     override suspend fun getTopNews(
         page: Int,
-        pageSize: Int
+        pageSize: Int,
+        category: String,
+        forceRefresh: Boolean,
+        excludeIds: List<String>
     ): NewsPage {
         require(appCode.isNotBlank()) { "缺少 ALI_NEWS_APPCODE，请在 local.properties 中配置" }
         require(baseUrl.isNotBlank()) { "缺少 ALI_NEWS_BASE_URL，请在 local.properties 中配置" }

@@ -1,0 +1,30 @@
+{
+  "database_path": "backend/data/topnews.db",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "request_timeout": 12,
+  "user_agent": "TopNewsBot/0.1",
+  "sources": [
+    {
+      "name": "BBC中文",
+      "kind": "rss",
+      "url": "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml",
+      "region": "境外",
+      "category": "国际"
+    },
+    {
+      "name": "联合早报中国即时",
+      "kind": "portal",
+      "url": "https://www.zaobao.com.sg/realtime/china",
+      "region": "境外",
+      "category": "国内"
+    },
+    {
+      "name": "新华社首页",
+      "kind": "portal",
+      "url": "https://www.news.cn/",
+      "region": "境内",
+      "category": "综合"
+    }
+  ]
+}

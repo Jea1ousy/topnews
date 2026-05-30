@@ -78,8 +78,9 @@ private fun ArticleMeta(article: NewsArticle) {
             )
             Spacer(modifier = Modifier.width(5.dp))
         }
+        val commentText = if (article.commentCount > 0) "${article.commentCount}评论  " else ""
         Text(
-            text = "${article.source}  ${article.commentCount}评论  ${article.timeText}",
+            text = "${article.source}  $commentText${article.timeText}",
             color = Color(0xFF999999),
             fontSize = 12.sp,
             maxLines = 1,
