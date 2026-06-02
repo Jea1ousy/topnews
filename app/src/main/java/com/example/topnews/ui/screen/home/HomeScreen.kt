@@ -1,5 +1,8 @@
 package com.example.topnews.ui.screen.home
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,9 +17,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
+import androidx.core.content.ContextCompat
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.topnews.ui.components.TopNewsBottomBar
+import com.example.topnews.data.location.DeviceLocationProvider
 import com.example.topnews.ui.screen.home.components.CategoryTabs
 import com.example.topnews.ui.screen.home.components.HomeHeader
 import com.example.topnews.ui.screen.home.components.NewsList
@@ -27,11 +34,36 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
     val pagerState = rememberPagerState(
         initialPage = uiState.categories.indexOf(uiState.selectedCategory).coerceAtLeast(0),
         pageCount = { uiState.categories.size }
     )
     val coroutineScope = rememberCoroutineScope()
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val granted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
+            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        if (granted) {
+            coroutineScope.launch {
+                loadWeatherFromDevice(context = context, viewModel = viewModel)
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (context.hasLocationPermission()) {
+            loadWeatherFromDevice(context = context, viewModel = viewModel)
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                )
+            )
+        }
+    }
 
     LaunchedEffect(uiState.selectedCategory, uiState.categories) {
         val page = uiState.categories.indexOf(uiState.selectedCategory)
@@ -48,8 +80,7 @@ fun HomeScreen(
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        containerColor = Color.White,
-        bottomBar = { TopNewsBottomBar(selectedTab = "搜索") }
+        containerColor = Color.White
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -96,4 +127,25 @@ fun HomeScreen(
             }
         }
     }
+}
+
+private suspend fun loadWeatherFromDevice(
+    context: Context,
+    viewModel: HomeViewModel
+) {
+    DeviceLocationProvider(context.applicationContext)
+        .getDeviceLocation()
+        ?.let(viewModel::loadWeather)
+}
+
+private fun Context.hasLocationPermission(): Boolean {
+    val coarseGranted = ContextCompat.checkSelfPermission(
+        this,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+    val fineGranted = ContextCompat.checkSelfPermission(
+        this,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+    return coarseGranted || fineGranted
 }

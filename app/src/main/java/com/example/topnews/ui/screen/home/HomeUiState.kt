@@ -17,5 +17,6 @@ data class HomeUiState(
     val isLoadingMore: Boolean = false,
     val hasMore: Boolean = true,
     val currentPage: Int = 1,
-    val lastUpdatedText: String = ""
+    val lastUpdatedText: String = "",
+    val seenArticleIds: Set<String> = emptySet()
 )

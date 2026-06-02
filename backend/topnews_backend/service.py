@@ -18,11 +18,14 @@ class IngestResult:
 
 
 class NewsAggregator:
+    MIN_ARTICLES_PER_SOURCE = 80
+
     def __init__(self, config: AppConfig, store: NewsStore) -> None:
         self.config = config
         self.store = store
 
     def ingest(self, limit_per_source: int = 30) -> list[IngestResult]:
+        effective_limit = max(limit_per_source, self.MIN_ARTICLES_PER_SOURCE)
         results: list[IngestResult] = []
         for source in self.enabled_sources:
             try:
@@ -30,7 +33,7 @@ class NewsAggregator:
                     source,
                     timeout=self.config.request_timeout,
                     user_agent=self.config.user_agent,
-                    limit=limit_per_source,
+                    limit=effective_limit,
                 )
                 stored = self.store.upsert_articles(articles)
                 results.append(IngestResult(source=source.name, ok=True, fetched=len(articles), stored=stored))

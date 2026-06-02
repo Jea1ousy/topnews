@@ -102,7 +102,7 @@ class TopNewsApi:
                 )
                 return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
             if method == "POST" and parsed.path == "/v1/ingest":
-                limit = int(body.get("limit_per_source", self._first(params, "limitPerSource", "30")) or 30)
+                limit = int(body.get("limit_per_source", self._first(params, "limitPerSource", "80")) or 80)
                 results = self.aggregator.ingest(limit_per_source=limit)
                 return self.write_json(request, HTTPStatus.OK, {"results": [asdict(result) for result in results]})
             if method == "POST" and parsed.path == "/news/channel":

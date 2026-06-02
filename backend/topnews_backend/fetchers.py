@@ -34,6 +34,13 @@ class FetchError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class PortalLink:
+    title: str
+    url: str
+    image_url: str | None = None
+
+
 def fetch_source(source: SourceConfig, timeout: float, user_agent: str, limit: int = 30) -> list[RawArticle]:
     body = _download(source.url, timeout, user_agent)
     if source.kind == "rss":
@@ -63,7 +70,7 @@ def parse_rss(body: bytes, source: SourceConfig, limit: int = 30) -> list[RawArt
             continue
         description = _first_text(item, "description", "summary") or ""
         published_at = _parse_date(_first_text(item, "pubDate", "published", "updated"))
-        image_url = _rss_image(item)
+        image_url = _rss_image(item, source.url) or _image_from_html(description, source.url)
         articles.append(_article_from_values(source, title, link, description, "", image_url, published_at))
 
     return articles
@@ -75,12 +82,14 @@ def parse_portal(body: bytes, source: SourceConfig, limit: int = 30) -> list[Raw
 
     articles: list[RawArticle] = []
     seen_urls: set[str] = set()
-    for title, url in parser.links:
-        clean_title = _clean_text(title)
+    for link in parser.links:
+        clean_title = _clean_text(link.title)
+        url = link.url
         if len(clean_title) < 6 or url in seen_urls:
             continue
         seen_urls.add(url)
-        articles.append(_article_from_values(source, clean_title, url, parser.description, "", parser.image_url, None))
+        image_url = link.image_url or parser.image_for_title(clean_title) or parser.image_url
+        articles.append(_article_from_values(source, clean_title, url, parser.description, "", image_url, None))
         if len(articles) >= limit:
             break
 
@@ -91,11 +100,13 @@ class PortalParser(HTMLParser):
     def __init__(self, base_url: str) -> None:
         super().__init__(convert_charrefs=True)
         self.base_url = base_url
-        self.links: list[tuple[str, str]] = []
+        self.links: list[PortalLink] = []
         self.description = ""
         self.image_url: str | None = None
+        self.images: list[tuple[str, str]] = []
         self._current_href: str | None = None
         self._current_text: list[str] = []
+        self._current_image_url: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {name.lower(): value or "" for name, value in attrs}
@@ -105,6 +116,7 @@ class PortalParser(HTMLParser):
                 return
             self._current_href = urllib.parse.urljoin(self.base_url, href)
             self._current_text = []
+            self._current_image_url = None
         elif tag.lower() == "meta":
             name = (attr_map.get("name") or attr_map.get("property") or "").lower()
             content = attr_map.get("content", "")
@@ -112,6 +124,16 @@ class PortalParser(HTMLParser):
                 self.description = _clean_text(content)
             if name in {"og:image", "twitter:image"} and content and not self.image_url:
                 self.image_url = urllib.parse.urljoin(self.base_url, content)
+        elif tag.lower() == "img":
+            image_url = _image_from_attrs(attr_map, self.base_url)
+            image_text = _clean_text(attr_map.get("alt", "") or attr_map.get("title", ""))
+            if image_url:
+                if image_text:
+                    self.images.append((image_text, image_url))
+                if self._current_href and not self._current_image_url:
+                    self._current_image_url = image_url
+                if self._current_href and image_text:
+                    self._current_text.append(image_text)
 
     def handle_data(self, data: str) -> None:
         if self._current_href:
@@ -121,9 +143,19 @@ class PortalParser(HTMLParser):
         if tag.lower() == "a" and self._current_href:
             text = _clean_text("".join(self._current_text))
             if text:
-                self.links.append((text, self._current_href))
+                self.links.append(PortalLink(title=text, url=self._current_href, image_url=self._current_image_url))
             self._current_href = None
             self._current_text = []
+            self._current_image_url = None
+
+    def image_for_title(self, title: str) -> str | None:
+        normalized_title = _clean_text(title)
+        if not normalized_title:
+            return None
+        for image_text, image_url in self.images:
+            if image_text and (image_text in normalized_title or normalized_title in image_text):
+                return image_url
+        return None
 
 
 def _download(url: str, timeout: float, user_agent: str) -> bytes:
@@ -187,19 +219,56 @@ def _rss_link(item: ET.Element) -> str | None:
     return None
 
 
-def _rss_image(item: ET.Element) -> str | None:
+def _rss_image(item: ET.Element, base_url: str) -> str | None:
     for element in item.iter():
         tag = _local_name(element.tag).lower()
         if tag in {"thumbnail", "content"}:
-            url = element.attrib.get("url")
+            url = element.attrib.get("url") or element.attrib.get("src")
             if url:
-                return url
+                return _absolute_image_url(url, base_url)
         if tag in {"enclosure", "image"}:
             url = element.attrib.get("url") or (element.text or "").strip()
             mime_type = element.attrib.get("type", "")
             if url and (not mime_type or mime_type.startswith("image/")):
-                return url
+                return _absolute_image_url(url, base_url)
     return None
+
+
+def _image_from_html(value: str, base_url: str) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"<img\b[^>]*>", value, flags=re.IGNORECASE)
+    if not match:
+        return None
+    attrs = dict(
+        (name.lower(), html.unescape(raw_value or ""))
+        for name, raw_value in re.findall(r"""([\w:-]+)\s*=\s*["']([^"']*)["']""", match.group(0))
+    )
+    return _image_from_attrs(attrs, base_url)
+
+
+def _image_from_attrs(attrs: dict[str, str], base_url: str) -> str | None:
+    srcset = attrs.get("srcset") or attrs.get("data-srcset")
+    if srcset:
+        first = srcset.split(",", 1)[0].strip().split(" ", 1)[0]
+        if first:
+            return _absolute_image_url(first, base_url)
+
+    for key in ("data-original", "data-src", "data-lazy-src", "src"):
+        value = attrs.get(key, "").strip()
+        image_url = _absolute_image_url(value, base_url)
+        if image_url:
+            return image_url
+    return None
+
+
+def _absolute_image_url(value: str | None, base_url: str) -> str | None:
+    if not value:
+        return None
+    clean_value = value.strip()
+    if not clean_value or clean_value.startswith("data:image"):
+        return None
+    return urllib.parse.urljoin(base_url, clean_value)
 
 
 def _parse_date(value: str | None) -> str | None:

@@ -13,6 +13,13 @@
       "category": "国际"
     },
     {
+      "name": "纽约时报中文网",
+      "kind": "rss",
+      "url": "https://cn.nytimes.com/rss/",
+      "region": "境外",
+      "category": "国际"
+    },
+    {
       "name": "联合早报中国即时",
       "kind": "portal",
       "url": "https://www.zaobao.com.sg/realtime/china",
@@ -25,6 +32,20 @@
       "url": "https://www.news.cn/",
       "region": "境内",
       "category": "综合"
+    },
+    {
+      "name": "36氪快讯",
+      "kind": "rss",
+      "url": "https://36kr.com/feed",
+      "region": "境内",
+      "category": "科技"
+    },
+    {
+      "name": "少数派",
+      "kind": "rss",
+      "url": "https://sspai.com/feed",
+      "region": "境内",
+      "category": "科技"
     }
   ]
 }

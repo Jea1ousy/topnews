@@ -3,6 +3,8 @@ package com.example.topnews.ui.screen.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.topnews.data.repository.TopNewsBackendRepository
+import com.example.topnews.data.repository.WeatherRepository
+import com.example.topnews.domain.model.DeviceLocation
 import com.example.topnews.domain.repository.NewsRepository
 import java.net.UnknownHostException
 import java.text.SimpleDateFormat
@@ -16,6 +18,7 @@ import kotlinx.coroutines.launch
 
 class HomeViewModel : ViewModel() {
     private val repository: NewsRepository = TopNewsBackendRepository()
+    private val weatherRepository = WeatherRepository()
     private val pageSize = 20
 
     private val _uiState = MutableStateFlow(HomeUiState(isLoading = true))
@@ -31,6 +34,7 @@ class HomeViewModel : ViewModel() {
             it.copy(
                 selectedCategory = category,
                 articles = emptyList(),
+                seenArticleIds = emptySet(),
                 currentPage = 1,
                 hasMore = true,
                 error = null
@@ -41,6 +45,36 @@ class HomeViewModel : ViewModel() {
 
     fun refresh() {
         loadFirstPage(forceRefresh = true)
+    }
+
+    fun loadWeather(location: DeviceLocation) {
+        _uiState.update {
+            it.copy(
+                city = location.city,
+                weather = "更新中"
+            )
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                weatherRepository.getCurrentWeather(city = location.city)
+            }.onSuccess { weather ->
+                _uiState.update {
+                    it.copy(
+                        city = weather.city,
+                        temperature = weather.temperature,
+                        weather = weather.weather
+                    )
+                }
+            }.onFailure {
+                _uiState.update {
+                    it.copy(
+                        city = location.city,
+                        weather = "天气更新失败"
+                    )
+                }
+            }
+        }
     }
 
     private fun loadFirstPage(forceRefresh: Boolean) {
@@ -60,14 +94,19 @@ class HomeViewModel : ViewModel() {
                     pageSize = pageSize,
                     category = category,
                     forceRefresh = forceRefresh,
-                    excludeIds = if (forceRefresh) _uiState.value.articles.map { it.id } else emptyList()
+                    excludeIds = if (forceRefresh) _uiState.value.seenArticleIds.toList() else emptyList()
                 )
             }
                 .onSuccess { newsPage ->
                     _uiState.update {
                         val keepCurrent = forceRefresh && it.articles.isNotEmpty() && newsPage.articles.isEmpty()
+                        val nextArticles = if (keepCurrent) it.articles else newsPage.articles
                         it.copy(
-                            articles = if (keepCurrent) it.articles else newsPage.articles,
+                            articles = nextArticles,
+                            seenArticleIds = (it.seenArticleIds + nextArticles.map { article -> article.id })
+                                .toList()
+                                .takeLast(300)
+                                .toSet(),
                             isLoading = false,
                             isRefreshing = false,
                             isLoadingMore = false,
@@ -113,6 +152,10 @@ class HomeViewModel : ViewModel() {
                     _uiState.update {
                         it.copy(
                             articles = it.articles + nextPageResult.articles,
+                            seenArticleIds = (it.seenArticleIds + nextPageResult.articles.map { article -> article.id })
+                                .toList()
+                                .takeLast(300)
+                                .toSet(),
                             isLoadingMore = false,
                             hasMore = nextPageResult.hasMore,
                             currentPage = nextPageResult.page,

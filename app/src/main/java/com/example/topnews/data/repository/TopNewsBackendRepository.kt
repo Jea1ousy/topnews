@@ -12,6 +12,11 @@ import com.example.topnews.domain.repository.NewsRepository
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.time.Duration
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
 class TopNewsBackendRepository(
@@ -33,7 +38,7 @@ class TopNewsBackendRepository(
         val exclude = excludeIds
             .filter { it.isNotBlank() }
             .distinct()
-            .take(50)
+            .take(MAX_REFRESH_EXCLUDE_IDS)
             .joinToString(",")
             .takeIf { it.isNotBlank() }
 
@@ -113,7 +118,7 @@ class TopNewsBackendRepository(
                 .joinToString(" · ")
                 .ifBlank { "TopNews" },
             commentCount = 0,
-            timeText = publishedAt ?: fetchedAt ?: "刚刚",
+            timeText = formatRelativeTime(publishedAt ?: fetchedAt),
             link = url.orEmpty(),
             description = description.orEmpty(),
             content = content.orEmpty(),
@@ -139,7 +144,7 @@ class TopNewsBackendRepository(
             title = safeTitle,
             source = metaParts.joinToString(" · ").ifBlank { "arXiv" },
             commentCount = 0,
-            timeText = publishedAt ?: updatedAt ?: fetchedAt ?: "刚刚",
+            timeText = formatRelativeTime(publishedAt ?: updatedAt ?: fetchedAt),
             link = url.orEmpty(),
             description = abstractText.orEmpty(),
             content = listOf(authorText, abstractText.orEmpty())
@@ -150,6 +155,8 @@ class TopNewsBackendRepository(
     }
 
     companion object {
+        private const val MAX_REFRESH_EXCLUDE_IDS = 300
+
         private fun createApi(baseUrl: String): TopNewsBackendApi {
             val client = OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
@@ -167,6 +174,37 @@ class TopNewsBackendRepository(
 
         private fun String.withTrailingSlash(): String {
             return if (endsWith("/")) this else "$this/"
+        }
+
+        private fun formatRelativeTime(rawTime: String?): String {
+            val instant = rawTime?.toInstantOrNull() ?: return "刚刚"
+            val now = Instant.now()
+            val duration = Duration.between(instant, now)
+            if (duration.isNegative) return "刚刚"
+
+            val minutes = duration.toMinutes()
+            val hours = duration.toHours()
+            val days = duration.toDays()
+            return when {
+                minutes < 1 -> "刚刚"
+                minutes < 60 -> "${minutes}分钟前"
+                hours < 24 -> "${hours}小时前"
+                days == 1L -> "昨天"
+                days < 7 -> "${days}天前"
+                else -> instant
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDate()
+                    .formatForNews()
+            }
+        }
+
+        private fun String.toInstantOrNull(): Instant? {
+            return runCatching { Instant.parse(this) }.getOrNull()
+        }
+
+        private fun LocalDate.formatForNews(): String {
+            val pattern = if (year == LocalDate.now().year) "MM-dd" else "yyyy-MM-dd"
+            return format(DateTimeFormatter.ofPattern(pattern))
         }
     }
 }

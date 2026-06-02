@@ -21,7 +21,7 @@ class BackendTest(unittest.TestCase):
         <rss><channel><item>
             <title>中国经济政策发布</title>
             <link>https://example.com/a</link>
-            <description>国务院发布新政策</description>
+            <description><![CDATA[国务院发布新政策 <img src="/cover.jpg" />]]></description>
             <pubDate>Wed, 27 May 2026 10:00:00 GMT</pubDate>
         </item></channel></rss>
         """.encode()
@@ -29,16 +29,18 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertEqual(articles[0].category, "国内")
         self.assertEqual(articles[0].region, "境内")
+        self.assertEqual(articles[0].image_url, "https://example.com/cover.jpg")
 
     def test_parse_portal(self):
         source = SourceConfig(name="测试门户", url="https://example.com/news/", kind="portal")
         body = """
         <html><head><meta name="description" content="门户摘要"></head>
-        <body><a href="/a">国际新闻标题足够长</a><a href="#">忽略</a></body></html>
+        <body><a href="/a"><img src="/a.jpg" alt="国际新闻标题足够长">国际新闻标题足够长</a><a href="#">忽略</a></body></html>
         """.encode()
         articles = parse_portal(body, source)
         self.assertEqual(len(articles), 1)
         self.assertEqual(articles[0].url, "https://example.com/a")
+        self.assertEqual(articles[0].image_url, "https://example.com/a.jpg")
 
     def test_store_recommend(self):
         with tempfile.TemporaryDirectory() as temp_dir:

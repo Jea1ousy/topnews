@@ -15,7 +15,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ingest_parser = subparsers.add_parser("ingest", help="Fetch configured sources and store articles")
-    ingest_parser.add_argument("--limit-per-source", type=int, default=30)
+    ingest_parser.add_argument("--limit-per-source", type=int, default=80)
 
     paper_ingest_parser = subparsers.add_parser("papers-ingest", help="Fetch arXiv papers and store them")
     paper_ingest_parser.add_argument("--limit", type=int, default=30)
