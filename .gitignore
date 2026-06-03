@@ -19,3 +19,4 @@ backend/data/
 *.db-wal
 __pycache__/
 .pytest_cache/
+documents/development-log-*.md
