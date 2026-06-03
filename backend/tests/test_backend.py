@@ -6,7 +6,9 @@ from backend.topnews_backend.academic import build_arxiv_rss_url, parse_arxiv_fe
 from backend.topnews_backend.classifier import classify
 from backend.topnews_backend.config import SourceConfig
 from backend.topnews_backend.fetchers import parse_portal, parse_rss
-from backend.topnews_backend.storage import NewsStore
+from backend.topnews_backend.paper_figures import build_arxiv_html_url, parse_arxiv_primary_figure
+from backend.topnews_backend.storage import Article, NewsStore, Paper, article_to_dict, paper_to_dict
+from backend.topnews_backend.summary import build_summary
 
 
 class BackendTest(unittest.TestCase):
@@ -63,6 +65,8 @@ class BackendTest(unittest.TestCase):
             self.assertEqual(store.upsert_articles(articles), 2)
             page = store.recommend(page=1, page_size=10, category="科技")
             self.assertEqual(page.total_count, 2)
+            self.assertEqual(article_to_dict(page.items[0])["item_type"], "news")
+            self.assertTrue(article_to_dict(page.items[0])["summary"])
             refresh_page = store.recommend(
                 page=1,
                 page_size=10,
@@ -121,6 +125,7 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(papers[0].source, "arXiv RSS")
         self.assertEqual(papers[0].pdf_url, "https://arxiv.org/pdf/2605.00001")
         self.assertEqual(papers[0].categories, ("cs.AI",))
+        self.assertEqual(papers[0].abstract, "Retrieval augmented generation.")
         self.assertTrue(build_arxiv_rss_url().startswith("https://rss.arxiv.org/rss/"))
 
     def test_store_paper_recommendations(self):
@@ -149,12 +154,120 @@ class BackendTest(unittest.TestCase):
             self.assertEqual(page.total_count, 1)
             self.assertEqual(page.items[0].matched_keywords, ["RAG"])
             self.assertGreater(page.items[0].score, 0)
+            self.assertEqual(paper_to_dict(page.items[0])["item_type"], "paper")
+            self.assertTrue(paper_to_dict(page.items[0])["summary"])
+            self.assertEqual(len(store.papers_pending_figures()), 1)
+            self.assertTrue(
+                store.update_paper_figure(
+                    page.items[0].external_id,
+                    "https://arxiv.org/html/2605.00002v1/figure.png",
+                    "Figure 1: RAG system overview",
+                    image_data=b"fake-png-data",
+                    image_mime_type="image/png",
+                )
+            )
+            enriched_page = store.recommend_papers(page=1, page_size=10)
+            self.assertEqual(enriched_page.items[0].image_url, "https://arxiv.org/html/2605.00002v1/figure.png")
+            self.assertEqual(enriched_page.items[0].image_caption, "Figure 1: RAG system overview")
+            payload = paper_to_dict(enriched_page.items[0])
+            self.assertEqual(payload["image_source_url"], "https://arxiv.org/html/2605.00002v1/figure.png")
+            self.assertEqual(payload["image_url"], "/v1/papers/arxiv%3A2605.00002v1/image")
+            self.assertEqual(store.get_paper_image(page.items[0].external_id), (b"fake-png-data", "image/png"))
+            self.assertEqual(len(store.papers_pending_figures()), 0)
             refresh_page = store.recommend_papers(
                 page=1,
                 page_size=10,
                 excluded_ids=[page.items[0].external_id],
             )
             self.assertEqual(refresh_page.total_count, 0)
+
+    def test_existing_remote_paper_image_is_pending_until_cached(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = NewsStore(Path(temp_dir) / "topnews.db")
+            papers = parse_arxiv_feed(
+                """
+                <feed xmlns="http://www.w3.org/2005/Atom">
+                  <entry>
+                    <id>http://arxiv.org/abs/2605.00004v1</id>
+                    <updated>2026-05-28T10:00:00Z</updated>
+                    <published>2026-05-27T10:00:00Z</published>
+                    <title>Cached Figures for Papers</title>
+                    <summary>We cache figures in SQLite.</summary>
+                    <author><name>Alice</name></author>
+                    <category term="cs.AI" />
+                  </entry>
+                </feed>
+                """.encode()
+            )
+            store.upsert_papers(papers)
+            external_id = papers[0].external_id
+            store.update_paper_figure(
+                external_id,
+                "https://arxiv.org/html/2605.00004v1/figure.png",
+                "Figure 1: Cache overview",
+            )
+            self.assertEqual(len(store.papers_pending_figures()), 1)
+            self.assertIsNone(paper_to_dict(store.recommend_papers(1, 1, use_keywords=False).items[0])["image_url"])
+
+    def test_ai_frontier_mixes_news_and_papers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = NewsStore(Path(temp_dir) / "topnews.db")
+            source = SourceConfig(name="AI资讯", url="https://example.com/rss", kind="rss", category="科技")
+            articles = parse_rss(
+                """
+                <rss><channel><item>
+                    <title>人工智能大模型发布新版本</title>
+                    <link>https://example.com/ai-news</link>
+                    <description>新版本提升了多模态理解能力。</description>
+                </item></channel></rss>
+                """.encode(),
+                source,
+            )
+            papers = parse_arxiv_feed(
+                """
+                <feed xmlns="http://www.w3.org/2005/Atom">
+                  <entry>
+                    <id>http://arxiv.org/abs/2605.00003v1</id>
+                    <updated>2026-05-28T10:00:00Z</updated>
+                    <published>2026-05-27T10:00:00Z</published>
+                    <title>Multimodal Agents for Reliable Reasoning</title>
+                    <summary>We study reliable multimodal AI agents.</summary>
+                    <author><name>Alice</name></author>
+                    <category term="cs.AI" />
+                  </entry>
+                </feed>
+                """.encode()
+            )
+            store.upsert_articles(articles)
+            store.upsert_papers(papers)
+            store.add_academic_keyword("unrelated-keyword")
+
+            page = store.ai_frontier(page=1, page_size=10)
+            self.assertTrue(any(isinstance(item, Article) for item in page.items))
+            self.assertTrue(any(isinstance(item, Paper) for item in page.items))
+
+    def test_build_summary_strips_html_and_truncates(self):
+        summary = build_summary("<p>这是第一句完整摘要。</p><p>" + "很长的内容" * 100 + "</p>", max_length=20)
+        self.assertEqual(summary, "这是第一句完整摘要。")
+
+    def test_parse_arxiv_primary_figure(self):
+        body = """
+        <html><body>
+          <figure class="ltx_figure">
+            <img src="2605.00001v1/small.png" width="120" height="80" alt="Refer to caption">
+            <figcaption><span>Figure 1:</span> Small example.</figcaption>
+          </figure>
+          <figure class="ltx_figure">
+            <img src="2605.00001v1/overview.png" width="640" height="360" alt="Refer to caption">
+            <figcaption><span>Figure 2:</span> Model overview.</figcaption>
+          </figure>
+        </body></html>
+        """.encode()
+        figure = parse_arxiv_primary_figure(body, "https://arxiv.org/html/2605.00001v1")
+        self.assertIsNotNone(figure)
+        self.assertEqual(figure.image_url, "https://arxiv.org/html/2605.00001v1/overview.png")
+        self.assertEqual(figure.caption, "Figure 2: Model overview.")
+        self.assertEqual(build_arxiv_html_url("https://arxiv.org/abs/2605.00001v1"), "https://arxiv.org/html/2605.00001v1")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import urllib.parse
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -10,6 +11,24 @@ from typing import Iterator
 
 from .academic import KeywordRule, RawPaper, paper_json, paper_list, parse_keyword_rule, score_paper
 from .fetchers import RawArticle
+from .summary import build_summary
+
+
+AI_NEWS_SIGNALS = (
+    "AI",
+    "人工智能",
+    "大模型",
+    "LLM",
+    "Agent",
+    "智能体",
+    "多模态",
+    "机器人",
+    "OpenAI",
+    "Anthropic",
+    "DeepSeek",
+    "Claude",
+    "Gemini",
+)
 
 
 @dataclass(frozen=True)
@@ -51,17 +70,21 @@ class Paper:
     source: str
     url: str
     pdf_url: str | None
+    image_url: str | None
+    image_caption: str | None
+    image_cached: bool
     categories: list[str]
     published_at: str | None
     updated_at: str | None
     fetched_at: str
+    figure_checked_at: str | None
     matched_keywords: list[str] | None = None
     score: int | None = None
 
 
 @dataclass(frozen=True)
 class Page:
-    items: list[Article] | list[Paper]
+    items: list[Article | Paper]
     page: int
     page_size: int
     total_count: int
@@ -145,6 +168,12 @@ class NewsStore:
                 )
                 """
             )
+            _ensure_column(connection, "papers", "image_url", "TEXT")
+            _ensure_column(connection, "papers", "image_caption", "TEXT")
+            _ensure_column(connection, "papers", "image_data", "BLOB")
+            _ensure_column(connection, "papers", "image_mime_type", "TEXT")
+            _ensure_column(connection, "papers", "image_cached_at", "TEXT")
+            _ensure_column(connection, "papers", "figure_checked_at", "TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_keywords_enabled ON academic_keywords(enabled)")
 
@@ -388,6 +417,61 @@ class NewsStore:
                 changed += 1
         return changed
 
+    def papers_pending_figures(self, limit: int = 10, force: bool = False) -> list[Paper]:
+        limit = min(max(limit, 1), 100)
+        where = "" if force else """
+            WHERE p.figure_checked_at IS NULL
+               OR (p.image_url IS NOT NULL AND p.image_url != '' AND p.image_data IS NULL)
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT p.*
+                FROM papers p
+                {where}
+                ORDER BY COALESCE(p.published_at, p.fetched_at) DESC, p.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [_row_to_paper(row) for row in rows]
+
+    def update_paper_figure(
+        self,
+        external_id: str,
+        image_url: str | None,
+        image_caption: str | None,
+        image_data: bytes | None = None,
+        image_mime_type: str | None = None,
+    ) -> bool:
+        checked_at = datetime.now(timezone.utc).isoformat()
+        cached_at = checked_at if image_data else None
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE papers
+                SET image_url = ?, image_caption = ?, image_data = ?,
+                    image_mime_type = ?, image_cached_at = ?, figure_checked_at = ?
+                WHERE external_id = ?
+                """,
+                (image_url, image_caption, image_data, image_mime_type, cached_at, checked_at, external_id),
+            )
+        return cursor.rowcount > 0
+
+    def get_paper_image(self, external_id: str) -> tuple[bytes, str] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT image_data, image_mime_type
+                FROM papers
+                WHERE external_id = ? AND image_data IS NOT NULL
+                """,
+                (external_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return bytes(row["image_data"]), row["image_mime_type"] or "application/octet-stream"
+
     def recommend_papers(
         self,
         page: int,
@@ -395,8 +479,9 @@ class NewsStore:
         query: str | None = None,
         category: str | None = None,
         excluded_ids: list[str] | None = None,
+        use_keywords: bool = True,
     ) -> Page:
-        rules = self.keyword_rules()
+        rules = self.keyword_rules() if use_keywords else []
         if query:
             rules.append(parse_keyword_rule(query))
 
@@ -443,10 +528,14 @@ class NewsStore:
                     source=paper.source,
                     url=paper.url,
                     pdf_url=paper.pdf_url,
+                    image_url=paper.image_url,
+                    image_caption=paper.image_caption,
+                    image_cached=paper.image_cached,
                     categories=paper.categories,
                     published_at=paper.published_at,
                     updated_at=paper.updated_at,
                     fetched_at=paper.fetched_at,
+                    figure_checked_at=paper.figure_checked_at,
                     matched_keywords=list(match.matched_keywords),
                     score=match.score,
                 )
@@ -457,15 +546,64 @@ class NewsStore:
         return Page(items=scored[offset : offset + page_size], page=page, page_size=page_size, total_count=len(scored))
 
     def ai_frontier(self, page: int, page_size: int, excluded_ids: list[str] | None = None) -> Page:
-        paper_page = self.recommend_papers(page=1, page_size=page_size * 2, excluded_ids=excluded_ids or [])
-        if paper_page.total_count > 0:
-            return Page(
-                items=paper_page.items[:page_size],
-                page=max(page, 1),
-                page_size=page_size,
-                total_count=paper_page.total_count,
-            )
-        return self.recommend(page=page, page_size=page_size, category="科技", query="AI", excluded_ids=excluded_ids or [])
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 100)
+        candidate_size = min(page * page_size, 100)
+        excluded_ids = excluded_ids or []
+        paper_page = self.recommend_papers(
+            page=1,
+            page_size=candidate_size,
+            excluded_ids=excluded_ids,
+            use_keywords=False,
+        )
+        news_page = self.recommend_ai_news(page=1, page_size=candidate_size, excluded_ids=excluded_ids)
+        combined = _interleave(news_page.items, paper_page.items)
+        offset = (page - 1) * page_size
+        return Page(
+            items=combined[offset : offset + page_size],
+            page=page,
+            page_size=page_size,
+            total_count=news_page.total_count + paper_page.total_count,
+        )
+
+    def recommend_ai_news(
+        self,
+        page: int,
+        page_size: int,
+        excluded_ids: list[str] | None = None,
+    ) -> Page:
+        excluded_ids = excluded_ids or []
+        clauses = ["a.category = ?"]
+        params: list[str] = ["科技"]
+        signal_clauses: list[str] = []
+        for signal in AI_NEWS_SIGNALS:
+            signal_clauses.append("(a.title LIKE ? OR a.description LIKE ? OR a.content LIKE ?)")
+            like = f"%{signal}%"
+            params.extend([like, like, like])
+        clauses.append("(" + " OR ".join(signal_clauses) + ")")
+        if excluded_ids:
+            placeholders = ", ".join("?" for _ in excluded_ids)
+            clauses.append(f"(a.external_id NOT IN ({placeholders}) AND CAST(a.id AS TEXT) NOT IN ({placeholders}))")
+            params.extend(excluded_ids)
+            params.extend(excluded_ids)
+
+        where = "WHERE " + " AND ".join(clauses)
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 100)
+        offset = (page - 1) * page_size
+        with self.connect() as connection:
+            total_count = connection.execute(f"SELECT COUNT(*) AS total FROM articles a {where}", params).fetchone()["total"]
+            rows = connection.execute(
+                f"""
+                SELECT a.*
+                FROM articles a
+                {where}
+                ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, page_size, offset],
+            ).fetchall()
+        return Page(items=[_row_to_article(row) for row in rows], page=page, page_size=page_size, total_count=total_count)
 
     def _filters(
         self,
@@ -503,7 +641,10 @@ class NewsStore:
 
 
 def article_to_dict(article: Article) -> dict[str, object]:
-    return asdict(article)
+    payload = asdict(article)
+    payload["item_type"] = "news"
+    payload["summary"] = build_summary(article.description, article.content, article.title)
+    return payload
 
 
 def keyword_to_dict(keyword: AcademicKeyword) -> dict[str, object]:
@@ -511,7 +652,29 @@ def keyword_to_dict(keyword: AcademicKeyword) -> dict[str, object]:
 
 
 def paper_to_dict(paper: Paper) -> dict[str, object]:
-    return asdict(paper)
+    payload = asdict(paper)
+    payload.pop("figure_checked_at", None)
+    payload.pop("image_cached", None)
+    payload["image_source_url"] = paper.image_url
+    payload["image_url"] = (
+        f"/v1/papers/{urllib.parse.quote(paper.external_id, safe='')}/image"
+        if paper.image_cached
+        else None
+    )
+    payload["item_type"] = "paper"
+    payload["summary"] = build_summary(paper.abstract, paper.title)
+    return payload
+
+
+def _interleave(first: list[Article | Paper], second: list[Article | Paper]) -> list[Article | Paper]:
+    combined: list[Article | Paper] = []
+    max_length = max(len(first), len(second))
+    for index in range(max_length):
+        if index < len(first):
+            combined.append(first[index])
+        if index < len(second):
+            combined.append(second[index])
+    return combined
 
 
 def _row_to_article(row: sqlite3.Row) -> Article:
@@ -555,8 +718,18 @@ def _row_to_paper(row: sqlite3.Row) -> Paper:
         source=row["source"],
         url=row["url"],
         pdf_url=row["pdf_url"],
+        image_url=row["image_url"],
+        image_caption=row["image_caption"],
+        image_cached=row["image_data"] is not None,
         categories=paper_list(row["categories"]),
         published_at=row["published_at"],
         updated_at=row["updated_at"],
         fetched_at=row["fetched_at"],
+        figure_checked_at=row["figure_checked_at"],
     )
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

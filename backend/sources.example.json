@@ -46,6 +46,20 @@
       "url": "https://sspai.com/feed",
       "region": "境内",
       "category": "科技"
+    },
+    {
+      "name": "量子位",
+      "kind": "rss",
+      "url": "https://www.qbitai.com/feed",
+      "region": "境内",
+      "category": "科技"
+    },
+    {
+      "name": "TechCrunch AI",
+      "kind": "rss",
+      "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+      "region": "境外",
+      "category": "科技"
     }
   ]
 }

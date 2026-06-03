@@ -60,6 +60,12 @@ class TopNewsApi:
                 return self.write_json(request, HTTPStatus.OK, [asdict(source) for source in self.aggregator.enabled_sources])
             if method == "GET" and parsed.path == "/v1/categories":
                 return self.write_json(request, HTTPStatus.OK, self.store.categories())
+            if method == "GET" and parsed.path.startswith("/v1/papers/") and parsed.path.endswith("/image"):
+                external_id = urllib.parse.unquote(parsed.path[len("/v1/papers/") : -len("/image")].rstrip("/"))
+                image = self.store.get_paper_image(external_id)
+                if not image:
+                    return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "paper_image_not_found"})
+                return self.write_binary(request, HTTPStatus.OK, image[0], image[1])
             if method == "GET" and parsed.path == "/v1/news":
                 page = self.store.list_articles(**self._page_args(params))
                 return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
@@ -88,9 +94,15 @@ class TopNewsApi:
                 deleted = self.store.delete_academic_keyword(keyword_id)
                 return self.write_json(request, HTTPStatus.OK, {"deleted": deleted})
             if method == "POST" and parsed.path == "/v1/papers/ingest":
-                limit = int(body.get("limit", self._first(params, "limit", "30")) or 30)
+                limit = int(body.get("limit", self._first(params, "limit", "100")) or 100)
                 source = str(body.get("source") or self._first(params, "source", "auto"))
                 result = self.aggregator.ingest_papers(limit=limit, source=source)
+                return self.write_json(request, HTTPStatus.OK, asdict(result))
+            if method == "POST" and parsed.path == "/v1/papers/figures/ingest":
+                limit = int(body.get("limit", self._first(params, "limit", "10")) or 10)
+                delay = float(body.get("delay_seconds", self._first(params, "delaySeconds", "3")) or 3)
+                force = str(body.get("force") or self._first(params, "force", "false")).lower() == "true"
+                result = self.aggregator.ingest_paper_figures(limit=limit, delay_seconds=delay, force=force)
                 return self.write_json(request, HTTPStatus.OK, asdict(result))
             if method == "GET" and parsed.path == "/v1/papers/recommendations":
                 page = self.store.recommend_papers(
@@ -126,6 +138,21 @@ class TopNewsApi:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request.send_header("Content-Type", "application/json; charset=utf-8")
         request.send_header("Content-Length", str(len(data)))
+        request.end_headers()
+        request.wfile.write(data)
+
+    def write_binary(
+        self,
+        request: BaseHTTPRequestHandler,
+        status: HTTPStatus,
+        data: bytes,
+        content_type: str,
+    ) -> None:
+        request.send_response(status.value)
+        request.send_header("Access-Control-Allow-Origin", "*")
+        request.send_header("Content-Type", content_type)
+        request.send_header("Content-Length", str(len(data)))
+        request.send_header("Cache-Control", "public, max-age=86400")
         request.end_headers()
         request.wfile.write(data)
 
@@ -212,7 +239,7 @@ class TopNewsApi:
                         "title": article.title,
                         "source": article.source,
                         "pubDate": article.published_at or article.fetched_at,
-                        "desc": article.description,
+                        "desc": article_to_dict(article)["summary"],
                         "content": article.content,
                         "html": "",
                         "link": article.url,

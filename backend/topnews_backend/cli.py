@@ -18,13 +18,21 @@ def main() -> None:
     ingest_parser.add_argument("--limit-per-source", type=int, default=80)
 
     paper_ingest_parser = subparsers.add_parser("papers-ingest", help="Fetch arXiv papers and store them")
-    paper_ingest_parser.add_argument("--limit", type=int, default=30)
+    paper_ingest_parser.add_argument("--limit", type=int, default=100)
     paper_ingest_parser.add_argument(
         "--source",
         choices=("auto", "rss", "api"),
         default="auto",
         help="arXiv fetch source. auto uses RSS first, then API fallback.",
     )
+
+    paper_figure_parser = subparsers.add_parser(
+        "paper-figures-ingest",
+        help="Fetch primary figures from arXiv HTML papers and cache them",
+    )
+    paper_figure_parser.add_argument("--limit", type=int, default=10)
+    paper_figure_parser.add_argument("--delay-seconds", type=float, default=3.0)
+    paper_figure_parser.add_argument("--force", action="store_true")
 
     keyword_parser = subparsers.add_parser("keyword-add", help="Add an academic keyword rule")
     keyword_parser.add_argument("rule")
@@ -52,6 +60,18 @@ def main() -> None:
 
     if args.command == "papers-ingest":
         print(asdict(aggregator.ingest_papers(limit=args.limit, source=args.source)))
+        return
+
+    if args.command == "paper-figures-ingest":
+        print(
+            asdict(
+                aggregator.ingest_paper_figures(
+                    limit=args.limit,
+                    delay_seconds=args.delay_seconds,
+                    force=args.force,
+                )
+            )
+        )
         return
 
     if args.command == "keyword-add":

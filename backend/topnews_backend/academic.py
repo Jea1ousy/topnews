@@ -15,7 +15,7 @@ from email.utils import parsedate_to_datetime
 from .fetchers import FetchError
 
 
-AI_ARXIV_CATEGORIES = ("cs.AI", "cs.CL", "cs.CV", "cs.LG", "stat.ML")
+AI_ARXIV_CATEGORIES = ("cs.AI", "cs.CL", "cs.CV", "cs.LG", "cs.IR", "cs.NE", "cs.RO", "stat.ML")
 
 
 @dataclass(frozen=True)
@@ -118,20 +118,21 @@ def fetch_arxiv_papers(
     if source != "auto":
         raise FetchError(f"Unsupported arXiv source: {source}")
 
-    rss_error: FetchError | None = None
+    papers: list[RawPaper] = []
+    errors: list[str] = []
     try:
-        papers = fetch_arxiv_rss(timeout=timeout, user_agent=user_agent, limit=limit)
-        if papers:
-            return papers
+        papers.extend(fetch_arxiv_rss(timeout=timeout, user_agent=user_agent, limit=limit))
     except FetchError as exc:
-        rss_error = exc
+        errors.append(f"arXiv RSS failed: {exc}")
 
     try:
-        return fetch_arxiv_api(rules=rules, timeout=timeout, user_agent=user_agent, limit=limit)
-    except FetchError as api_error:
-        if rss_error:
-            raise FetchError(f"arXiv RSS failed: {rss_error}; arXiv API failed: {api_error}") from api_error
-        raise
+        papers.extend(fetch_arxiv_api(rules=rules, timeout=timeout, user_agent=user_agent, limit=limit))
+    except FetchError as exc:
+        errors.append(f"arXiv API failed: {exc}")
+
+    if not papers:
+        raise FetchError("; ".join(errors) or "arXiv returned no papers")
+    return _deduplicate_papers(papers, limit)
 
 
 def fetch_arxiv_api(rules: list[KeywordRule], timeout: float, user_agent: str, limit: int = 30) -> list[RawPaper]:
@@ -250,13 +251,14 @@ def parse_arxiv_rss(body: bytes, limit: int = 30) -> list[RawPaper]:
             continue
         categories = tuple(_rss_categories(item))
         authors = tuple(_rss_authors(item, description))
+        abstract = _rss_abstract(description)
         published_at = _rss_date(item)
         papers.append(
             RawPaper(
                 external_id=_paper_external_id(link),
                 title=title,
                 authors=authors,
-                abstract=description,
+                abstract=abstract,
                 source="arXiv RSS",
                 url=link,
                 pdf_url=_abs_to_pdf_url(link),
@@ -337,6 +339,11 @@ def _rss_authors(item: ET.Element, description: str) -> list[str]:
     return [part.strip() for part in re.split(r",| and ", match.group(1)) if part.strip()]
 
 
+def _rss_abstract(description: str) -> str:
+    match = re.search(r"(?:Abstract:|摘要[:：])\s*(.+)$", description, flags=re.IGNORECASE)
+    return _clean(match.group(1)) if match else description
+
+
 def _rss_date(item: ET.Element) -> str | None:
     for element in item.iter():
         tag = _local_name(element.tag).lower()
@@ -385,3 +392,14 @@ def _clean(value: str) -> str:
 
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+def _deduplicate_papers(papers: list[RawPaper], limit: int) -> list[RawPaper]:
+    unique: dict[str, RawPaper] = {}
+    for paper in papers:
+        unique[paper.external_id] = paper
+    return sorted(
+        unique.values(),
+        key=lambda paper: paper.published_at or paper.updated_at or "",
+        reverse=True,
+    )[: min(max(limit, 1), 200)]
