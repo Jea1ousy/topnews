@@ -37,6 +37,7 @@ fun NewsList(
     onLoadMore: () -> Unit,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
+    onArticleClick: (NewsArticle) -> Unit,
     modifier: Modifier = Modifier
 ) {
     when {
@@ -128,7 +129,10 @@ fun NewsList(
                         items = articles,
                         key = { article -> article.id }
                     ) { article ->
-                        NewsListItem(article = article)
+                        NewsListItem(
+                            article = article,
+                            onClick = onArticleClick
+                        )
                     }
 
                     item(key = "load-more") {

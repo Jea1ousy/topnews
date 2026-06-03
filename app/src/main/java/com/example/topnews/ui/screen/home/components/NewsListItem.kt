@@ -1,6 +1,7 @@
 package com.example.topnews.ui.screen.home.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,9 +31,14 @@ import com.example.topnews.domain.model.NewsArticle
 @Composable
 fun NewsListItem(
     article: NewsArticle,
+    onClick: (NewsArticle) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onClick(article) }
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
