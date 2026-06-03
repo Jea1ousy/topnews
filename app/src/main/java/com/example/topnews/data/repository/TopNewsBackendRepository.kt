@@ -79,7 +79,11 @@ class TopNewsBackendRepository(
     private suspend fun refreshRemote(category: String, pageSize: Int) {
         runCatching {
             when (category) {
-                "AI前沿", "学术推荐" -> api.ingestPapers(limit = pageSize, source = "rss")
+                "AI前沿" -> {
+                    api.ingestNews(limitPerSource = pageSize)
+                    api.ingestPapers(limit = pageSize, source = "rss")
+                }
+                "学术推荐" -> api.ingestPapers(limit = pageSize, source = "rss")
                 else -> api.ingestNews(limitPerSource = pageSize)
             }
         }
@@ -120,10 +124,10 @@ class TopNewsBackendRepository(
             commentCount = 0,
             timeText = formatRelativeTime(publishedAt ?: fetchedAt),
             link = url.orEmpty(),
-            description = description.orEmpty(),
+            description = summary?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
             content = content.orEmpty(),
             channelName = category.orEmpty(),
-            imageUrl = imageUrl
+            imageUrl = resolveBackendUrl(imageUrl)
         )
     }
 
@@ -146,12 +150,31 @@ class TopNewsBackendRepository(
             commentCount = 0,
             timeText = formatRelativeTime(publishedAt ?: updatedAt ?: fetchedAt),
             link = url.orEmpty(),
-            description = abstractText.orEmpty(),
-            content = listOf(authorText, abstractText.orEmpty())
+            description = summary?.takeIf { it.isNotBlank() }
+                ?: abstractText?.takeIf { it.isNotBlank() }
+                ?: description.orEmpty(),
+            content = listOf(
+                authorText,
+                imageCaption?.takeIf { it.isNotBlank() }?.let { "图注：$it" },
+                abstractText?.takeIf { it.isNotBlank() }
+                    ?: content?.takeIf { it.isNotBlank() }
+                    ?: description.orEmpty()
+            )
+                .filterNotNull()
                 .filter { it.isNotBlank() }
                 .joinToString("\n\n"),
-            channelName = "学术推荐"
+            channelName = if (itemType == "news") "AI前沿" else "学术推荐",
+            imageUrl = resolveBackendUrl(imageUrl)
         )
+    }
+
+    private fun resolveBackendUrl(value: String?): String? {
+        val url = value?.takeIf { it.isNotBlank() } ?: return null
+        return when {
+            url.startsWith("http://") || url.startsWith("https://") -> url
+            url.startsWith("/") -> baseUrl.trimEnd('/') + url
+            else -> baseUrl.withTrailingSlash() + url
+        }
     }
 
     companion object {

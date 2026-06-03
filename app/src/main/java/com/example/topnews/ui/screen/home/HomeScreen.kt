@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -21,7 +22,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
@@ -92,22 +92,27 @@ fun HomeScreen(
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        containerColor = Color.White
+        containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.White)
+                .background(MaterialTheme.colorScheme.background)
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
             HomeHeader(
                 uiState = uiState,
-                onRefresh = viewModel::refresh
+                onRefresh = {
+                    if (previewArticle == null) {
+                        viewModel.refresh()
+                    }
+                }
             )
             CategoryTabs(
                 categories = uiState.categories,
                 selectedCategory = uiState.selectedCategory,
                 onCategorySelected = { category ->
+                    if (previewArticle != null) return@CategoryTabs
                     viewModel.selectCategory(category)
                     val page = uiState.categories.indexOf(category)
                     if (page >= 0) {
@@ -119,6 +124,7 @@ fun HomeScreen(
             )
             HorizontalPager(
                 state = pagerState,
+                userScrollEnabled = previewArticle == null,
                 modifier = Modifier.weight(1f)
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {

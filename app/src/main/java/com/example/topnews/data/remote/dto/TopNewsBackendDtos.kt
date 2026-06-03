@@ -34,6 +34,8 @@ data class BackendNewsDto(
     val category: String?,
     @SerializedName("description")
     val description: String?,
+    @SerializedName("summary")
+    val summary: String?,
     @SerializedName("content")
     val content: String?,
     @SerializedName("image_url")
@@ -70,12 +72,24 @@ data class BackendPaperDto(
     val authors: List<String>?,
     @SerializedName("abstract")
     val abstractText: String?,
+    @SerializedName("description")
+    val description: String?,
+    @SerializedName("summary")
+    val summary: String?,
+    @SerializedName("content")
+    val content: String?,
     @SerializedName("source")
     val source: String?,
     @SerializedName("url")
     val url: String?,
     @SerializedName("pdf_url")
     val pdfUrl: String?,
+    @SerializedName("image_url")
+    val imageUrl: String?,
+    @SerializedName("image_caption")
+    val imageCaption: String?,
+    @SerializedName("item_type")
+    val itemType: String?,
     @SerializedName("categories")
     val categories: List<String>?,
     @SerializedName("published_at")

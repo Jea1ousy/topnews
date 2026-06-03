@@ -2,8 +2,12 @@ package com.example.topnews.ui.screen.home.components
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -13,6 +17,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.aspectRatio
@@ -32,6 +38,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,8 +53,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -55,8 +62,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.imageLoader
-import coil.request.ImageRequest
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.ui.theme.TopnewsTheme
 import kotlinx.coroutines.launch
@@ -74,13 +79,12 @@ fun NewsPreviewOverlay(
         val previewTopPx = fullHeightPx * PREVIEW_TOP_FRACTION
         val expandThresholdPx = fullHeightPx * EXPAND_THRESHOLD_FRACTION
         val dismissThresholdPx = fullHeightPx * DISMISS_THRESHOLD_FRACTION
-        val availableHeight = maxHeight
-        val context = LocalContext.current
         val scope = rememberCoroutineScope()
         var cardOffsetPx by remember(article.id, fullHeightPx) {
             mutableFloatStateOf(fullHeightPx)
         }
         var isFullDetail by remember(article.id) { mutableStateOf(false) }
+        var isImagePreviewOpen by remember(article.id) { mutableStateOf(false) }
 
         suspend fun animateCardTo(targetOffsetPx: Float) {
             animate(
@@ -107,28 +111,29 @@ fun NewsPreviewOverlay(
             animateCardTo(previewTopPx)
         }
 
-        LaunchedEffect(article.id, article.imageUrl) {
-            article.imageUrl?.let { imageUrl ->
-                context.imageLoader.enqueue(
-                    ImageRequest.Builder(context)
-                        .data(imageUrl)
-                        .build()
-                )
-            }
-        }
-
         BackHandler {
-            dismissOverlay()
+            if (isImagePreviewOpen) {
+                isImagePreviewOpen = false
+            } else {
+                dismissOverlay()
+            }
         }
 
         val scrimAlpha = ((fullHeightPx - cardOffsetPx) / fullHeightPx)
             .coerceIn(0f, 1f) * 0.34f
-        val visibleCardFraction = ((fullHeightPx - cardOffsetPx) / fullHeightPx)
-            .coerceIn(0f, 1f)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = scrimAlpha))
+                .pointerInput(article.id) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false).consume()
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
         )
 
         val cornerRadius = (
@@ -145,11 +150,11 @@ fun NewsPreviewOverlay(
                 .fillMaxSize()
                 .offset { IntOffset(0, cardOffsetPx.roundToInt()) }
                 .clip(RoundedCornerShape(topStart = cornerRadius, topEnd = cornerRadius))
-                .background(Color.White)
+                .background(MaterialTheme.colorScheme.surface)
                 .draggable(
                     state = dragState,
                     orientation = Orientation.Vertical,
-                    enabled = !isFullDetail,
+                    enabled = !isFullDetail && !isImagePreviewOpen,
                     onDragStopped = { velocity ->
                         scope.launch {
                             val shouldExpand = cardOffsetPx <= expandThresholdPx ||
@@ -182,17 +187,29 @@ fun NewsPreviewOverlay(
                     FullArticleDetail(
                         article = article,
                         onClose = dismissOverlay,
+                        onImageClick = { isImagePreviewOpen = true },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
                     PreviewSummary(
                         article = article,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(availableHeight * visibleCardFraction)
+                        onImageClick = { isImagePreviewOpen = true },
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
             }
+        }
+
+        AnimatedVisibility(
+            visible = isImagePreviewOpen,
+            modifier = Modifier.fillMaxSize(),
+            enter = fadeIn() + scaleIn(initialScale = 0.92f),
+            exit = fadeOut() + scaleOut(targetScale = 0.92f)
+        ) {
+            EnlargedImagePreview(
+                article = article,
+                onClose = { isImagePreviewOpen = false }
+            )
         }
     }
 }
@@ -200,6 +217,7 @@ fun NewsPreviewOverlay(
 @Composable
 private fun PreviewSummary(
     article: NewsArticle,
+    onImageClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -212,7 +230,7 @@ private fun PreviewSummary(
                 .align(Alignment.CenterHorizontally)
                 .size(width = 36.dp, height = 4.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(Color(0xFFD5D5D5))
+                .background(MaterialTheme.colorScheme.outlineVariant)
         )
         Spacer(modifier = Modifier.height(16.dp))
         Column(
@@ -223,9 +241,8 @@ private fun PreviewSummary(
             if (article.imageUrl != null) {
                 PreviewImage(
                     article = article,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
+                    onClick = onImageClick,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(18.dp))
             }
@@ -234,7 +251,7 @@ private fun PreviewSummary(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(if (article.imageUrl != null) 2f else 1f),
-                color = Color(0xFF333333),
+                color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 17.sp,
                 lineHeight = 28.sp,
                 maxLines = 12,
@@ -248,12 +265,13 @@ private fun PreviewSummary(
 private fun FullArticleDetail(
     article: NewsArticle,
     onClose: () -> Unit,
+    onImageClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.White)
+            .background(MaterialTheme.colorScheme.surface)
             .statusBarsPadding()
     ) {
         DetailTopBar(onClose = onClose)
@@ -269,7 +287,7 @@ private fun FullArticleDetail(
             Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = article.title,
-                color = Color(0xFF111111),
+                color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 21.sp,
                 lineHeight = 29.sp,
                 fontWeight = FontWeight.Normal
@@ -278,15 +296,14 @@ private fun FullArticleDetail(
                 Spacer(modifier = Modifier.height(20.dp))
                 PreviewImage(
                     article = article,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
+                    onClick = onImageClick,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
             Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = article.readableBody(),
-                color = Color(0xFF111111),
+                color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 18.sp,
                 lineHeight = 31.sp,
                 fontWeight = FontWeight.Normal
@@ -306,7 +323,7 @@ private fun DetailTopBar(onClose: () -> Unit) {
     ) {
         Text(
             text = "<",
-            color = Color(0xFF111111),
+            color = MaterialTheme.colorScheme.onSurface,
             fontSize = 42.sp,
             lineHeight = 42.sp,
             modifier = Modifier.clickable { onClose() }
@@ -317,20 +334,20 @@ private fun DetailTopBar(onClose: () -> Unit) {
                 .weight(1f)
                 .height(46.dp)
                 .clip(RoundedCornerShape(24.dp))
-                .background(Color(0xFFF1F1F3))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(horizontal = 18.dp),
             contentAlignment = Alignment.CenterStart
         ) {
             Text(
                 text = "搜你想看的",
-                color = Color(0xFF777777),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 20.sp
             )
         }
         Spacer(modifier = Modifier.width(18.dp))
         Text(
             text = "...",
-            color = Color(0xFF111111),
+            color = MaterialTheme.colorScheme.onSurface,
             fontSize = 30.sp,
             lineHeight = 30.sp
         )
@@ -347,12 +364,12 @@ private fun SourceRow(article: NewsArticle) {
             modifier = Modifier
                 .size(42.dp)
                 .clip(RoundedCornerShape(21.dp))
-                .background(Color(0xFFFFECEE)),
+                .background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = article.source.firstOrNull()?.toString() ?: "新",
-                color = Color(0xFFFF3E49),
+                color = MaterialTheme.colorScheme.primary,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -361,7 +378,7 @@ private fun SourceRow(article: NewsArticle) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = article.source,
-                color = Color(0xFF111111),
+                color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -370,7 +387,7 @@ private fun SourceRow(article: NewsArticle) {
             Spacer(modifier = Modifier.height(3.dp))
             Text(
                 text = article.timeText,
-                color = Color(0xFF999999),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -380,13 +397,13 @@ private fun SourceRow(article: NewsArticle) {
             modifier = Modifier
                 .height(38.dp)
                 .clip(RoundedCornerShape(4.dp))
-                .background(Color(0xFFF7F7F7))
+                .background(MaterialTheme.colorScheme.secondaryContainer)
                 .padding(horizontal = 16.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = "关注",
-                color = Color(0xFF111111),
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold
             )
@@ -397,20 +414,32 @@ private fun SourceRow(article: NewsArticle) {
 @Composable
 private fun PreviewImage(
     article: NewsArticle,
-    modifier: Modifier = Modifier
-        .fillMaxWidth()
-        .height(188.dp)
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth()
 ) {
+    var imageAspectRatio by remember(article.imageUrl) {
+        mutableFloatStateOf(DEFAULT_IMAGE_ASPECT_RATIO)
+    }
     Box(
         modifier = modifier
+            .aspectRatio(imageAspectRatio)
+            .animateContentSize()
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFFEDEDED))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
     ) {
         AsyncImage(
             model = article.imageUrl,
             contentDescription = article.title,
             modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop
+            contentScale = ContentScale.Fit,
+            onSuccess = { state ->
+                val size = state.painter.intrinsicSize
+                if (size.width > 0f && size.height > 0f) {
+                    imageAspectRatio = (size.width / size.height)
+                        .coerceIn(MIN_IMAGE_ASPECT_RATIO, MAX_IMAGE_ASPECT_RATIO)
+                }
+            }
         )
 
         if (article.videoDuration != null) {
@@ -424,12 +453,58 @@ private fun PreviewImage(
             ) {
                 Text(
                     text = ">",
-                    color = Color(0xFFFF3E49),
+                    color = MaterialTheme.colorScheme.primary,
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun EnlargedImagePreview(
+    article: NewsArticle,
+    onClose: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.96f))
+            .clickable(onClick = onClose)
+    ) {
+        AsyncImage(
+            model = article.imageUrl,
+            contentDescription = article.title,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 72.dp),
+            contentScale = ContentScale.Fit
+        )
+        Text(
+            text = "×",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 12.dp, end = 18.dp)
+                .size(44.dp)
+                .clickable(onClick = onClose),
+            color = Color.White,
+            fontSize = 36.sp,
+            lineHeight = 40.sp,
+            fontWeight = FontWeight.Light
+        )
+        Text(
+            text = article.title,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(horizontal = 20.dp, vertical = 24.dp),
+            color = Color.White.copy(alpha = 0.88f),
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -446,6 +521,9 @@ private const val EXPAND_THRESHOLD_FRACTION = 0.30f
 private const val DISMISS_THRESHOLD_FRACTION = 0.72f
 private const val MIN_UPWARD_FLING_VELOCITY = 150f
 private const val MIN_DOWNWARD_FLING_VELOCITY = 150f
+private const val DEFAULT_IMAGE_ASPECT_RATIO = 16f / 9f
+private const val MIN_IMAGE_ASPECT_RATIO = 0.8f
+private const val MAX_IMAGE_ASPECT_RATIO = 3f
 
 @Preview(
     name = "News Preview Card",
@@ -459,10 +537,11 @@ private fun NewsPreviewCardPreview() {
     TopnewsTheme(dynamicColor = false) {
         PreviewSummary(
             article = previewArticleSample,
+            onImageClick = {},
             modifier = Modifier
                 .fillMaxWidth()
                 .height(520.dp)
-                .background(Color.White)
+                .background(MaterialTheme.colorScheme.surface)
         )
     }
 }
@@ -480,6 +559,7 @@ private fun FullNewsDetailPreview() {
         FullArticleDetail(
             article = previewArticleSample,
             onClose = {},
+            onImageClick = {},
             modifier = Modifier.fillMaxSize()
         )
     }
