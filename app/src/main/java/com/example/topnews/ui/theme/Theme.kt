@@ -1,6 +1,5 @@
 package com.example.topnews.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -9,35 +8,51 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = BrandPurple,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF3B126F),
+    onPrimaryContainer = Color(0xFFE9DFFF),
+    secondary = BrandYellow,
+    onSecondary = BrandNavy,
+    tertiary = BrandYellow,
+    onTertiary = BrandNavy,
+    background = Color(0xFF101218),
+    onBackground = Color(0xFFE4E7EC),
+    surface = Color(0xFF181B22),
+    onSurface = Color(0xFFE4E7EC),
+    surfaceVariant = Color(0xFF252A34),
+    onSurfaceVariant = Color(0xFFB8C0CC),
+    outlineVariant = Color(0xFF343A46)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+    primary = BrandPurple,
     onPrimary = Color.White,
+    primaryContainer = BrandPurpleContainer,
+    onPrimaryContainer = BrandNavy,
+    secondary = BrandNavy,
     onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    secondaryContainer = BrandYellowContainer,
+    onSecondaryContainer = BrandNavy,
+    tertiary = BrandYellow,
+    onTertiary = BrandNavy,
+    background = AppBackground,
+    onBackground = TextPrimary,
+    surface = AppSurface,
+    onSurface = TextPrimary,
+    surfaceVariant = ImagePlaceholder,
+    onSurfaceVariant = TextSecondary,
+    outlineVariant = DividerColor
 )
 
 @Composable
 fun TopnewsTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

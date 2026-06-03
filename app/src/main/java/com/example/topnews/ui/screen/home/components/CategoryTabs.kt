@@ -15,13 +15,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,7 +52,11 @@ fun CategoryTabs(
             categories.forEach { category ->
                 val selected = category == selectedCategory
                 val textColor by animateColorAsState(
-                    targetValue = if (selected) Color(0xFF111111) else Color(0xFF333333),
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
                     animationSpec = tween(durationMillis = 180),
                     label = "categoryTextColor"
                 )
@@ -86,7 +90,7 @@ fun CategoryTabs(
                                     .align(Alignment.Center)
                                     .width(indicatorWidth),
                                 thickness = 2.dp,
-                                color = Color(0xFFFF3E49)
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -95,10 +99,10 @@ fun CategoryTabs(
             Text(
                 text = "=",
                 modifier = Modifier.padding(start = 8.dp, end = 4.dp),
-                color = Color(0xFF777777),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 24.sp
             )
         }
-        HorizontalDivider(thickness = 0.5.dp, color = Color(0xFFE8E8E8))
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
     }
 }

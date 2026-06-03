@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -48,7 +49,7 @@ fun NewsListItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = article.title,
-                    color = Color(0xFF222222),
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = if (article.isTop) 17.sp else 18.sp,
                     lineHeight = 24.sp,
                     fontWeight = FontWeight.Normal,
@@ -67,7 +68,7 @@ fun NewsListItem(
         HorizontalDivider(
             modifier = Modifier.padding(start = 16.dp),
             thickness = 0.5.dp,
-            color = Color(0xFFEDEDED)
+            color = MaterialTheme.colorScheme.outlineVariant
         )
     }
 }
@@ -78,7 +79,7 @@ private fun ArticleMeta(article: NewsArticle) {
         if (article.isTop) {
             Text(
                 text = "置顶",
-                color = Color(0xFFFF3E49),
+                color = MaterialTheme.colorScheme.primary,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -87,7 +88,7 @@ private fun ArticleMeta(article: NewsArticle) {
         val commentText = if (article.commentCount > 0) "${article.commentCount}评论  " else ""
         Text(
             text = "${article.source}  $commentText${article.timeText}",
-            color = Color(0xFF999999),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -101,7 +102,7 @@ private fun NewsThumbnail(article: NewsArticle) {
         modifier = Modifier
             .size(width = 112.dp, height = 76.dp)
             .clip(RoundedCornerShape(2.dp))
-            .background(Color(0xFFEDEDED))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         AsyncImage(
             model = article.imageUrl,
@@ -120,7 +121,12 @@ private fun NewsThumbnail(article: NewsArticle) {
                     .background(Color.White.copy(alpha = 0.72f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = ">", color = Color(0xFFFF3E49), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = ">",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
             Text(
                 text = article.videoDuration,

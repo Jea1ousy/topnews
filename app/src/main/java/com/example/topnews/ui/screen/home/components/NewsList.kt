@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -20,7 +21,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.topnews.domain.model.NewsArticle
 
@@ -43,7 +43,7 @@ fun NewsList(
     when {
         isLoading && articles.isEmpty() -> {
             Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(text = "加载中...", color = Color(0xFF777777))
+                Text(text = "加载中...", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
@@ -54,7 +54,7 @@ fun NewsList(
                     modifier = Modifier
                         .clickable { onRetry() }
                         .padding(24.dp),
-                    color = Color(0xFFFF3E49)
+                    color = MaterialTheme.colorScheme.primary
                 )
             }
         }
@@ -94,7 +94,7 @@ fun NewsList(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 16.dp, vertical = 10.dp),
-                                color = Color(0xFF999999)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -106,7 +106,7 @@ fun NewsList(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                                color = Color(0xFF999999)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -119,9 +119,12 @@ fun NewsList(
                                     .fillMaxWidth()
                                     .clickable { onRetry() }
                                     .padding(horizontal = 16.dp, vertical = 10.dp),
-                                color = Color(0xFFFF3E49)
+                                color = MaterialTheme.colorScheme.primary
                             )
-                            HorizontalDivider(thickness = 0.5.dp, color = Color(0xFFEDEDED))
+                            HorizontalDivider(
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
                         }
                     }
 
@@ -146,7 +149,7 @@ fun NewsList(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 16.dp),
-                            color = Color(0xFF999999)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
