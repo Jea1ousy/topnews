@@ -245,7 +245,7 @@ class TopNewsApi:
                         "link": article.url,
                         "channelId": article.category,
                         "channelName": article.category,
-                        "imageUrls": [article.image_url] if article.image_url else [],
+                        "imageUrls": article_to_dict(article)["image_urls"],
                     }
                     for article in page.items
                 ],

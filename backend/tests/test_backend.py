@@ -20,10 +20,16 @@ class BackendTest(unittest.TestCase):
     def test_parse_rss(self):
         source = SourceConfig(name="测试RSS", url="https://example.com/rss", kind="rss")
         body = """
-        <rss><channel><item>
+        <rss xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><item>
             <title>中国经济政策发布</title>
             <link>https://example.com/a</link>
             <description><![CDATA[国务院发布新政策 <img src="/cover.jpg" />]]></description>
+            <content:encoded><![CDATA[
+                <p>第一段介绍政策背景。</p>
+                <img src="/cover.jpg" />
+                <p>第二段说明政策影响。</p>
+                <img data-src="/detail.jpg" />
+            ]]></content:encoded>
             <pubDate>Wed, 27 May 2026 10:00:00 GMT</pubDate>
         </item></channel></rss>
         """.encode()
@@ -32,6 +38,19 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(articles[0].category, "国内")
         self.assertEqual(articles[0].region, "境内")
         self.assertEqual(articles[0].image_url, "https://example.com/cover.jpg")
+        self.assertEqual(
+            articles[0].image_urls,
+            ("https://example.com/cover.jpg", "https://example.com/detail.jpg"),
+        )
+        self.assertEqual(articles[0].content, "第一段介绍政策背景。\n\n第二段说明政策影响。")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = NewsStore(Path(temp_dir) / "topnews.db")
+            self.assertEqual(store.upsert_articles(articles), 1)
+            stored = store.list_articles(page=1, page_size=1).items[0]
+            self.assertEqual(
+                article_to_dict(stored)["image_urls"],
+                ["https://example.com/cover.jpg", "https://example.com/detail.jpg"],
+            )
 
     def test_parse_portal(self):
         source = SourceConfig(name="测试门户", url="https://example.com/news/", kind="portal")
@@ -67,6 +86,7 @@ class BackendTest(unittest.TestCase):
             self.assertEqual(page.total_count, 2)
             self.assertEqual(article_to_dict(page.items[0])["item_type"], "news")
             self.assertTrue(article_to_dict(page.items[0])["summary"])
+            self.assertEqual(article_to_dict(page.items[0])["image_urls"], [])
             refresh_page = store.recommend(
                 page=1,
                 page_size=10,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import sqlite3
 import urllib.parse
 from contextlib import contextmanager
@@ -43,6 +44,7 @@ class Article:
     description: str
     content: str
     image_url: str | None
+    image_urls: list[str]
     published_at: str | None
     fetched_at: str
 
@@ -127,11 +129,13 @@ class NewsStore:
                     description TEXT NOT NULL DEFAULT '',
                     content TEXT NOT NULL DEFAULT '',
                     image_url TEXT,
+                    image_urls TEXT NOT NULL DEFAULT '[]',
                     published_at TEXT,
                     fetched_at TEXT NOT NULL
                 )
                 """
             )
+            _ensure_column(connection, "articles", "image_urls", "TEXT NOT NULL DEFAULT '[]'")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles(region)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at)")
@@ -189,9 +193,9 @@ class NewsStore:
                     """
                     INSERT INTO articles (
                         external_id, title, url, source, region, category,
-                        description, content, image_url, published_at, fetched_at
+                        description, content, image_url, image_urls, published_at, fetched_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(external_id) DO UPDATE SET
                         title=excluded.title,
                         source=excluded.source,
@@ -200,6 +204,7 @@ class NewsStore:
                         description=excluded.description,
                         content=excluded.content,
                         image_url=excluded.image_url,
+                        image_urls=excluded.image_urls,
                         published_at=COALESCE(excluded.published_at, articles.published_at),
                         fetched_at=excluded.fetched_at
                     """,
@@ -213,6 +218,7 @@ class NewsStore:
                         article.description,
                         article.content,
                         article.image_url,
+                        json.dumps(article.image_urls, ensure_ascii=False),
                         article.published_at,
                         now,
                     ),
@@ -642,6 +648,7 @@ class NewsStore:
 
 def article_to_dict(article: Article) -> dict[str, object]:
     payload = asdict(article)
+    payload["image_urls"] = _article_images(article.image_url, article.image_urls)
     payload["item_type"] = "news"
     payload["summary"] = build_summary(article.description, article.content, article.title)
     return payload
@@ -689,6 +696,7 @@ def _row_to_article(row: sqlite3.Row) -> Article:
         description=row["description"],
         content=row["content"],
         image_url=row["image_url"],
+        image_urls=_article_images(row["image_url"], _json_string_list(row["image_urls"])),
         published_at=row["published_at"],
         fetched_at=row["fetched_at"],
     )
@@ -733,3 +741,16 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, defi
     columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _json_string_list(value: str | None) -> list[str]:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [item for item in parsed if isinstance(item, str) and item]
+
+
+def _article_images(image_url: str | None, image_urls: list[str]) -> list[str]:
+    values = [image_url, *image_urls] if image_url else image_urls
+    return list(dict.fromkeys(value for value in values if value))
