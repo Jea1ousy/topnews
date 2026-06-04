@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -33,6 +34,8 @@ import com.example.topnews.ui.screen.home.components.CategoryTabs
 import com.example.topnews.ui.screen.home.components.HomeHeader
 import com.example.topnews.ui.screen.home.components.NewsList
 import com.example.topnews.ui.screen.home.components.NewsPreviewOverlay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 
 @Composable
@@ -47,6 +50,7 @@ fun HomeScreen(
     )
     val coroutineScope = rememberCoroutineScope()
     var previewArticle by remember { mutableStateOf<NewsArticle?>(null) }
+    var programmaticScrollTargetPage by remember { mutableStateOf<Int?>(null) }
     val closePreview: () -> Unit = { previewArticle = null }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -76,14 +80,29 @@ fun HomeScreen(
     LaunchedEffect(uiState.selectedCategory, uiState.categories) {
         val page = uiState.categories.indexOf(uiState.selectedCategory)
         if (page >= 0 && page != pagerState.currentPage) {
-            pagerState.animateScrollToPage(page)
+            programmaticScrollTargetPage = page
+            try {
+                pagerState.animateScrollToPage(page)
+            } finally {
+                if (programmaticScrollTargetPage == page) {
+                    programmaticScrollTargetPage = null
+                }
+            }
         }
     }
 
-    LaunchedEffect(pagerState.currentPage, uiState.categories) {
-        uiState.categories.getOrNull(pagerState.currentPage)?.let { category ->
-            viewModel.selectCategory(category)
-        }
+    LaunchedEffect(pagerState, uiState.categories) {
+        snapshotFlow { pagerState.currentPage }
+            .mapNotNull { page ->
+                uiState.categories.getOrNull(page)?.let { category -> page to category }
+            }
+            .distinctUntilChanged()
+            .collect { (page, category) ->
+                val targetPage = programmaticScrollTargetPage
+                if (targetPage == null || targetPage == page) {
+                    viewModel.selectCategory(category)
+                }
+            }
     }
 
     BackHandler(enabled = previewArticle != null) {
@@ -114,12 +133,6 @@ fun HomeScreen(
                 onCategorySelected = { category ->
                     if (previewArticle != null) return@CategoryTabs
                     viewModel.selectCategory(category)
-                    val page = uiState.categories.indexOf(category)
-                    if (page >= 0) {
-                        coroutineScope.launch {
-                            pagerState.animateScrollToPage(page)
-                        }
-                    }
                 }
             )
             HorizontalPager(

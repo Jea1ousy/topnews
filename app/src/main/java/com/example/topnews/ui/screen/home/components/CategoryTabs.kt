@@ -20,11 +20,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 
 @Composable
 fun CategoryTabs(
@@ -35,9 +39,20 @@ fun CategoryTabs(
 ) {
     val scrollState = rememberScrollState()
     val selectedIndex = categories.indexOf(selectedCategory).coerceAtLeast(0)
+    val tabWidths = remember(categories) { mutableStateMapOf<String, Int>() }
 
-    LaunchedEffect(selectedIndex) {
-        val target = (selectedIndex * 72).coerceAtLeast(0)
+    LaunchedEffect(selectedCategory, tabWidths.toMap(), scrollState.maxValue) {
+        val selectedWidth = tabWidths[selectedCategory] ?: return@LaunchedEffect
+        val viewportWidth = scrollState.viewportSize
+        if (viewportWidth <= 0) return@LaunchedEffect
+
+        val selectedStart = categories
+            .take(selectedIndex)
+            .sumOf { category -> tabWidths[category] ?: 0 }
+        val selectedCenter = selectedStart + selectedWidth / 2f
+        val target = (selectedCenter - viewportWidth / 2f)
+            .roundToInt()
+            .coerceIn(0, scrollState.maxValue)
         scrollState.animateScrollTo(target)
     }
 
@@ -67,6 +82,9 @@ fun CategoryTabs(
                 )
                 Column(
                     modifier = Modifier
+                        .onSizeChanged { size ->
+                            tabWidths[category] = size.width
+                        }
                         .clickable { onCategorySelected(category) }
                         .padding(horizontal = 8.dp, vertical = 9.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
