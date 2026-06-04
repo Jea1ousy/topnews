@@ -229,7 +229,7 @@ class BackendTest(unittest.TestCase):
             self.assertEqual(len(store.papers_pending_figures()), 1)
             self.assertIsNone(paper_to_dict(store.recommend_papers(1, 1, use_keywords=False).items[0])["image_url"])
 
-    def test_ai_frontier_mixes_news_and_papers(self):
+    def test_ai_frontier_returns_news_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = NewsStore(Path(temp_dir) / "topnews.db")
             source = SourceConfig(name="AI资讯", url="https://example.com/rss", kind="rss", category="科技")
@@ -264,7 +264,8 @@ class BackendTest(unittest.TestCase):
 
             page = store.ai_frontier(page=1, page_size=10)
             self.assertTrue(any(isinstance(item, Article) for item in page.items))
-            self.assertTrue(any(isinstance(item, Paper) for item in page.items))
+            self.assertFalse(any(isinstance(item, Paper) for item in page.items))
+            self.assertEqual(page.total_count, 1)
 
     def test_build_summary_strips_html_and_truncates(self):
         summary = build_summary("<p>这是第一句完整摘要。</p><p>" + "很长的内容" * 100 + "</p>", max_length=20)

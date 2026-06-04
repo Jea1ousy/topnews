@@ -79,10 +79,7 @@ class TopNewsBackendRepository(
     private suspend fun refreshRemote(category: String, pageSize: Int) {
         runCatching {
             when (category) {
-                "AI前沿" -> {
-                    api.ingestNews(limitPerSource = pageSize)
-                    api.ingestPapers(limit = pageSize, source = "rss")
-                }
+                "AI前沿" -> api.ingestNews(limitPerSource = pageSize)
                 "学术推荐" -> api.ingestPapers(limit = pageSize, source = "rss")
                 else -> api.ingestNews(limitPerSource = pageSize)
             }

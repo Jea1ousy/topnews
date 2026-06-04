@@ -552,24 +552,10 @@ class NewsStore:
         return Page(items=scored[offset : offset + page_size], page=page, page_size=page_size, total_count=len(scored))
 
     def ai_frontier(self, page: int, page_size: int, excluded_ids: list[str] | None = None) -> Page:
-        page = max(page, 1)
-        page_size = min(max(page_size, 1), 100)
-        candidate_size = min(page * page_size, 100)
-        excluded_ids = excluded_ids or []
-        paper_page = self.recommend_papers(
-            page=1,
-            page_size=candidate_size,
-            excluded_ids=excluded_ids,
-            use_keywords=False,
-        )
-        news_page = self.recommend_ai_news(page=1, page_size=candidate_size, excluded_ids=excluded_ids)
-        combined = _interleave(news_page.items, paper_page.items)
-        offset = (page - 1) * page_size
-        return Page(
-            items=combined[offset : offset + page_size],
+        return self.recommend_ai_news(
             page=page,
             page_size=page_size,
-            total_count=news_page.total_count + paper_page.total_count,
+            excluded_ids=excluded_ids,
         )
 
     def recommend_ai_news(
