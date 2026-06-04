@@ -86,7 +86,8 @@ class AliNewsRepository(
             html = html.orEmpty(),
             channelId = channelId.orEmpty(),
             channelName = channelName.orEmpty(),
-            imageUrl = imageUrls.orEmpty().firstOrNull { it.isNotBlank() }
+            imageUrl = imageUrls.orEmpty().firstOrNull { it.isNotBlank() },
+            imageUrls = imageUrls.orEmpty().filter { it.isNotBlank() }.distinct()
         )
     }
 

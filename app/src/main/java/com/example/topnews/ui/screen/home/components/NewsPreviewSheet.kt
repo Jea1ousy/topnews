@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.aspectRatio
@@ -51,14 +52,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -84,7 +89,7 @@ fun NewsPreviewOverlay(
             mutableFloatStateOf(fullHeightPx)
         }
         var isFullDetail by remember(article.id) { mutableStateOf(false) }
-        var isImagePreviewOpen by remember(article.id) { mutableStateOf(false) }
+        var previewImageUrl by remember(article.id) { mutableStateOf<String?>(null) }
 
         suspend fun animateCardTo(targetOffsetPx: Float) {
             animate(
@@ -112,8 +117,8 @@ fun NewsPreviewOverlay(
         }
 
         BackHandler {
-            if (isImagePreviewOpen) {
-                isImagePreviewOpen = false
+            if (previewImageUrl != null) {
+                previewImageUrl = null
             } else {
                 dismissOverlay()
             }
@@ -154,7 +159,7 @@ fun NewsPreviewOverlay(
                 .draggable(
                     state = dragState,
                     orientation = Orientation.Vertical,
-                    enabled = !isFullDetail && !isImagePreviewOpen,
+                    enabled = !isFullDetail && previewImageUrl == null,
                     onDragStopped = { velocity ->
                         scope.launch {
                             val shouldExpand = cardOffsetPx <= expandThresholdPx ||
@@ -187,13 +192,13 @@ fun NewsPreviewOverlay(
                     FullArticleDetail(
                         article = article,
                         onClose = dismissOverlay,
-                        onImageClick = { isImagePreviewOpen = true },
+                        onImageClick = { previewImageUrl = it },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
                     PreviewSummary(
                         article = article,
-                        onImageClick = { isImagePreviewOpen = true },
+                        onImageClick = { previewImageUrl = it },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -201,14 +206,15 @@ fun NewsPreviewOverlay(
         }
 
         AnimatedVisibility(
-            visible = isImagePreviewOpen,
+            visible = previewImageUrl != null,
             modifier = Modifier.fillMaxSize(),
             enter = fadeIn() + scaleIn(initialScale = 0.92f),
             exit = fadeOut() + scaleOut(targetScale = 0.92f)
         ) {
             EnlargedImagePreview(
                 article = article,
-                onClose = { isImagePreviewOpen = false }
+                imageUrl = previewImageUrl.orEmpty(),
+                onClose = { previewImageUrl = null }
             )
         }
     }
@@ -217,7 +223,7 @@ fun NewsPreviewOverlay(
 @Composable
 private fun PreviewSummary(
     article: NewsArticle,
-    onImageClick: () -> Unit,
+    onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -240,8 +246,10 @@ private fun PreviewSummary(
         ) {
             if (article.imageUrl != null) {
                 PreviewImage(
-                    article = article,
-                    onClick = onImageClick,
+                    imageUrl = article.imageUrl,
+                    contentDescription = article.title,
+                    videoDuration = article.videoDuration,
+                    onClick = { onImageClick(article.imageUrl) },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(18.dp))
@@ -265,7 +273,7 @@ private fun PreviewSummary(
 private fun FullArticleDetail(
     article: NewsArticle,
     onClose: () -> Unit,
-    onImageClick: () -> Unit,
+    onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -285,29 +293,105 @@ private fun FullArticleDetail(
         ) {
             SourceRow(article = article)
             Spacer(modifier = Modifier.height(20.dp))
-            Text(
+            ArticleText(
+                article = article,
                 text = article.title,
                 color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 21.sp,
                 lineHeight = 29.sp,
-                fontWeight = FontWeight.Normal
+                modifier = Modifier.fillMaxWidth()
             )
             if (article.imageUrl != null) {
                 Spacer(modifier = Modifier.height(20.dp))
                 PreviewImage(
-                    article = article,
-                    onClick = onImageClick,
+                    imageUrl = article.imageUrl,
+                    contentDescription = article.title,
+                    videoDuration = article.videoDuration,
+                    onClick = { onImageClick(article.imageUrl) },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
             Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                text = article.readableBody(),
-                color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 18.sp,
-                lineHeight = 31.sp,
-                fontWeight = FontWeight.Normal
+            ArticleBody(article = article)
+            ArticleImageGallery(
+                article = article,
+                onImageClick = onImageClick
             )
+        }
+    }
+}
+
+@Composable
+private fun ArticleBody(article: NewsArticle) {
+    val paragraphs = remember(article.content, article.description, article.html) {
+        article.readableParagraphs()
+    }
+    paragraphs.forEachIndexed { index, paragraph ->
+        ArticleText(
+            article = article,
+            text = paragraph,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 18.sp,
+            lineHeight = 31.sp,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (index < paragraphs.lastIndex) {
+            Spacer(modifier = Modifier.height(14.dp))
+        }
+    }
+}
+
+@Composable
+private fun ArticleText(
+    article: NewsArticle,
+    text: String,
+    color: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    lineHeight: androidx.compose.ui.unit.TextUnit,
+    modifier: Modifier = Modifier
+) {
+    if (article.channelName == ACADEMIC_CHANNEL_NAME && containsLatexFormula(text)) {
+        AcademicFormulaText(
+            text = text,
+            color = color,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            modifier = modifier
+        )
+    } else {
+        Text(
+            text = text,
+            color = color,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            fontWeight = FontWeight.Normal,
+            modifier = modifier
+        )
+    }
+}
+
+@Composable
+private fun ArticleImageGallery(
+    article: NewsArticle,
+    onImageClick: (String) -> Unit
+) {
+    val extraImages = remember(article.imageUrl, article.imageUrls) {
+        article.imageUrls
+            .filter { it.isNotBlank() && it != article.imageUrl }
+            .distinct()
+    }
+    if (extraImages.isEmpty()) return
+
+    Spacer(modifier = Modifier.height(20.dp))
+    extraImages.forEachIndexed { index, imageUrl ->
+        PreviewImage(
+            imageUrl = imageUrl,
+            contentDescription = "${article.title} 图片 ${index + 2}",
+            onClick = { onImageClick(imageUrl) },
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (index < extraImages.lastIndex) {
+            Spacer(modifier = Modifier.height(14.dp))
         }
     }
 }
@@ -413,11 +497,13 @@ private fun SourceRow(article: NewsArticle) {
 
 @Composable
 private fun PreviewImage(
-    article: NewsArticle,
+    imageUrl: String,
+    contentDescription: String,
+    videoDuration: String? = null,
     onClick: () -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
-    var imageAspectRatio by remember(article.imageUrl) {
+    var imageAspectRatio by remember(imageUrl) {
         mutableFloatStateOf(DEFAULT_IMAGE_ASPECT_RATIO)
     }
     Box(
@@ -429,8 +515,8 @@ private fun PreviewImage(
             .clickable(onClick = onClick)
     ) {
         AsyncImage(
-            model = article.imageUrl,
-            contentDescription = article.title,
+            model = imageUrl,
+            contentDescription = contentDescription,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Fit,
             onSuccess = { state ->
@@ -442,7 +528,7 @@ private fun PreviewImage(
             }
         )
 
-        if (article.videoDuration != null) {
+        if (videoDuration != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -465,8 +551,13 @@ private fun PreviewImage(
 @Composable
 private fun EnlargedImagePreview(
     article: NewsArticle,
+    imageUrl: String,
     onClose: () -> Unit
 ) {
+    var scale by remember(article.id, imageUrl) { mutableFloatStateOf(1f) }
+    var offset by remember(article.id, imageUrl) { mutableStateOf(Offset.Zero) }
+    var imageViewportSize by remember(article.id, imageUrl) { mutableStateOf(IntSize.Zero) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -474,11 +565,38 @@ private fun EnlargedImagePreview(
             .clickable(onClick = onClose)
     ) {
         AsyncImage(
-            model = article.imageUrl,
+            model = imageUrl,
             contentDescription = article.title,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 12.dp, vertical = 72.dp),
+                .padding(horizontal = 12.dp, vertical = 72.dp)
+                .onSizeChanged { imageViewportSize = it }
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                }
+                .pointerInput(article.id, imageUrl) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val newScale = (scale * zoom).coerceIn(
+                            MIN_IMAGE_PREVIEW_SCALE,
+                            MAX_IMAGE_PREVIEW_SCALE
+                        )
+                        if (newScale <= MIN_IMAGE_PREVIEW_SCALE) {
+                            scale = MIN_IMAGE_PREVIEW_SCALE
+                            offset = Offset.Zero
+                        } else {
+                            val maxOffsetX = imageViewportSize.width * (newScale - 1f) / 2f
+                            val maxOffsetY = imageViewportSize.height * (newScale - 1f) / 2f
+                            scale = newScale
+                            offset = Offset(
+                                x = (offset.x + pan.x).coerceIn(-maxOffsetX, maxOffsetX),
+                                y = (offset.y + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
+                            )
+                        }
+                    }
+                },
             contentScale = ContentScale.Fit
         )
         Text(
@@ -509,11 +627,68 @@ private fun EnlargedImagePreview(
 }
 
 private fun NewsArticle.readableBody(): String {
-    return listOf(content, description)
+    return readableParagraphs().joinToString("\n\n")
+}
+
+private fun NewsArticle.readableParagraphs(): List<String> {
+    val rawBody = listOf(content, html, description)
         .firstOrNull { it.isNotBlank() }
-        ?.replace(Regex("\\s+"), " ")
-        ?.trim()
-        ?: "暂无更多正文内容。"
+        ?: return listOf("暂无更多正文内容。")
+    val normalized = rawBody
+        .replace(HTML_BREAK_REGEX, "\n")
+        .replace(HTML_TAG_REGEX, " ")
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("\r\n", "\n")
+        .replace('\r', '\n')
+        .lines()
+        .joinToString("\n") { line ->
+            line.replace(INLINE_WHITESPACE_REGEX, " ").trim()
+        }
+        .replace(MULTIPLE_NEWLINES_REGEX, "\n\n")
+        .trim()
+
+    if (normalized.isBlank()) {
+        return listOf("暂无更多正文内容。")
+    }
+
+    return normalized
+        .split(PARAGRAPH_BREAK_REGEX)
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .flatMap(::splitLongParagraph)
+}
+
+private fun splitLongParagraph(paragraph: String): List<String> {
+    if (paragraph.length <= MAX_PARAGRAPH_LENGTH) {
+        return listOf(paragraph)
+    }
+
+    val sentences = paragraph
+        .split(SENTENCE_BOUNDARY_REGEX)
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+    if (sentences.size <= 1) {
+        return listOf(paragraph)
+    }
+
+    val paragraphs = mutableListOf<String>()
+    val current = StringBuilder()
+    sentences.forEach { sentence ->
+        if (current.isNotEmpty() && current.length + sentence.length > MAX_PARAGRAPH_LENGTH) {
+            paragraphs += current.toString()
+            current.clear()
+        }
+        current.append(sentence)
+        if (current.length >= TARGET_PARAGRAPH_LENGTH) {
+            paragraphs += current.toString()
+            current.clear()
+        }
+    }
+    if (current.isNotEmpty()) {
+        paragraphs += current.toString()
+    }
+    return paragraphs
 }
 
 private const val PREVIEW_TOP_FRACTION = 0.38f
@@ -524,6 +699,20 @@ private const val MIN_DOWNWARD_FLING_VELOCITY = 150f
 private const val DEFAULT_IMAGE_ASPECT_RATIO = 16f / 9f
 private const val MIN_IMAGE_ASPECT_RATIO = 0.8f
 private const val MAX_IMAGE_ASPECT_RATIO = 3f
+private const val MIN_IMAGE_PREVIEW_SCALE = 1f
+private const val MAX_IMAGE_PREVIEW_SCALE = 5f
+private const val TARGET_PARAGRAPH_LENGTH = 150
+private const val MAX_PARAGRAPH_LENGTH = 240
+private const val ACADEMIC_CHANNEL_NAME = "学术推荐"
+
+private val HTML_BREAK_REGEX = Regex(
+    "(?i)<\\s*br\\s*/?\\s*>|</\\s*(p|div|article|section|li|h[1-6])\\s*>"
+)
+private val HTML_TAG_REGEX = Regex("<[^>]+>")
+private val INLINE_WHITESPACE_REGEX = Regex("[\\t ]+")
+private val MULTIPLE_NEWLINES_REGEX = Regex("\\n{3,}")
+private val PARAGRAPH_BREAK_REGEX = Regex("\\n+")
+private val SENTENCE_BOUNDARY_REGEX = Regex("(?<=[。！？；!?;])|(?<=[.!?])\\s+")
 
 @Preview(
     name = "News Preview Card",

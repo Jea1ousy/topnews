@@ -13,6 +13,7 @@ data class NewsArticle(
     val channelId: String = "",
     val channelName: String = "",
     val imageUrl: String? = null,
+    val imageUrls: List<String> = emptyList(),
     val videoDuration: String? = null,
     val isTop: Boolean = false
 )

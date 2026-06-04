@@ -125,9 +125,10 @@ class TopNewsBackendRepository(
             timeText = formatRelativeTime(publishedAt ?: fetchedAt),
             link = url.orEmpty(),
             description = summary?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
-            content = content.orEmpty(),
+            content = content?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
             channelName = category.orEmpty(),
-            imageUrl = resolveBackendUrl(imageUrl)
+            imageUrl = resolveBackendUrl(imageUrl),
+            imageUrls = resolveBackendUrls(imageUrls, imageUrl)
         )
     }
 
@@ -164,8 +165,15 @@ class TopNewsBackendRepository(
                 .filter { it.isNotBlank() }
                 .joinToString("\n\n"),
             channelName = if (itemType == "news") "AI前沿" else "学术推荐",
-            imageUrl = resolveBackendUrl(imageUrl)
+            imageUrl = resolveBackendUrl(imageUrl),
+            imageUrls = resolveBackendUrls(emptyList(), imageUrl)
         )
+    }
+
+    private fun resolveBackendUrls(values: List<String>?, fallback: String?): List<String> {
+        return listOfNotNull(fallback, *values.orEmpty().toTypedArray())
+            .mapNotNull(::resolveBackendUrl)
+            .distinct()
     }
 
     private fun resolveBackendUrl(value: String?): String? {
