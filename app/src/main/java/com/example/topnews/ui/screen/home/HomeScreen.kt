@@ -139,19 +139,33 @@ fun HomeScreen(
                 state = pagerState,
                 userScrollEnabled = previewArticle == null,
                 modifier = Modifier.weight(1f)
-            ) {
+            ) { page ->
+                val category = uiState.categories.getOrNull(page) ?: return@HorizontalPager
+                val feed = uiState.feedFor(category)
                 Box(modifier = Modifier.fillMaxSize()) {
                     NewsList(
-                        articles = uiState.articles,
-                        isLoading = uiState.isLoading,
-                        isLoadingMore = uiState.isLoadingMore,
-                        hasMore = uiState.hasMore,
-                        error = uiState.error,
-                        lastUpdatedText = uiState.lastUpdatedText,
-                        onRetry = viewModel::refresh,
-                        onLoadMore = viewModel::loadMore,
-                        isRefreshing = uiState.isRefreshing,
-                        onRefresh = viewModel::refresh,
+                        articles = feed.articles,
+                        isLoading = feed.isLoading,
+                        isLoadingMore = feed.isLoadingMore,
+                        hasMore = feed.hasMore,
+                        error = feed.error,
+                        lastUpdatedText = feed.lastUpdatedText,
+                        onRetry = {
+                            if (uiState.selectedCategory == category) {
+                                viewModel.refresh()
+                            }
+                        },
+                        onLoadMore = {
+                            if (uiState.selectedCategory == category) {
+                                viewModel.loadMore()
+                            }
+                        },
+                        isRefreshing = feed.isRefreshing,
+                        onRefresh = {
+                            if (uiState.selectedCategory == category) {
+                                viewModel.refresh()
+                            }
+                        },
                         onArticleClick = { article ->
                             previewArticle = article
                         },

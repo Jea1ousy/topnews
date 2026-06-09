@@ -1,5 +1,6 @@
 package com.example.topnews.data.repository
 
+import android.os.Build
 import com.example.topnews.BuildConfig
 import com.example.topnews.data.remote.TopNewsBackendApi
 import com.example.topnews.data.remote.dto.BackendNewsDto
@@ -17,11 +18,14 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 class TopNewsBackendRepository(
-    private val baseUrl: String = BuildConfig.TOPNEWS_BACKEND_BASE_URL
+    configuredBaseUrl: String = BuildConfig.TOPNEWS_BACKEND_BASE_URL,
+    deviceBaseUrl: String = BuildConfig.TOPNEWS_BACKEND_LAN_BASE_URL
 ) : NewsRepository {
+    private val baseUrl: String = resolveBaseUrl(configuredBaseUrl, deviceBaseUrl)
     private val api: TopNewsBackendApi by lazy { createApi(baseUrl) }
 
     override suspend fun getTopNews(
@@ -109,6 +113,16 @@ class TopNewsBackendRepository(
     private fun BackendNewsDto.toNewsArticle(): NewsArticle? {
         val safeTitle = title?.trim().orEmpty()
         if (safeTitle.isEmpty()) return null
+        val resolvedImageUrl = resolveBackendUrl(imageUrl)
+        val resolvedImageSourceUrl = resolveBackendUrl(imageSourceUrl)
+        val htmlWithCachedPrimaryImage = html
+            ?.replacePrimaryImageSource(
+                sourceImageUrl = imageSourceUrl,
+                cachedImageUrl = resolvedImageUrl
+            )
+        val normalizedImageUrls = imageUrls.orEmpty().map { value ->
+            if (value == imageSourceUrl) imageUrl.orEmpty() else value
+        }
 
         return NewsArticle(
             id = externalId?.takeIf { it.isNotBlank() } ?: id ?: safeTitle,
@@ -123,9 +137,11 @@ class TopNewsBackendRepository(
             link = url.orEmpty(),
             description = summary?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
             content = content?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
+            html = htmlWithCachedPrimaryImage?.takeIf { it.isNotBlank() } ?: contentHtml.orEmpty(),
             channelName = category.orEmpty(),
-            imageUrl = resolveBackendUrl(imageUrl),
-            imageUrls = resolveBackendUrls(imageUrls, imageUrl)
+            imageUrl = resolvedImageUrl,
+            imageUrls = resolveBackendUrls(normalizedImageUrls, imageUrl)
+                .filterNot { it == resolvedImageSourceUrl }
         )
     }
 
@@ -182,8 +198,60 @@ class TopNewsBackendRepository(
         }
     }
 
+    private fun String.replacePrimaryImageSource(sourceImageUrl: String?, cachedImageUrl: String?): String {
+        if (sourceImageUrl.isNullOrBlank() || cachedImageUrl.isNullOrBlank()) return this
+        return replace(sourceImageUrl, cachedImageUrl)
+    }
+
     companion object {
         private const val MAX_REFRESH_EXCLUDE_IDS = 300
+        private const val EMULATOR_HOST_ALIAS = "10.0.2.2"
+        private const val DEFAULT_LOCAL_BACKEND_BASE_URL = "http://10.0.2.2:8080/"
+
+        private fun resolveBaseUrl(configuredBaseUrl: String, deviceBaseUrl: String): String {
+            val configured = configuredBaseUrl.trim()
+            val device = deviceBaseUrl.trim()
+            val selected = when {
+                isProbablyEmulator() -> configured.ifBlank { DEFAULT_LOCAL_BACKEND_BASE_URL }
+                device.isNotBlank() -> device
+                else -> configured
+            }
+
+            return if (isProbablyEmulator()) {
+                selected.rewriteLocalBackendHostForEmulator().withTrailingSlash()
+            } else {
+                selected.withTrailingSlash()
+            }
+        }
+
+        private fun String.rewriteLocalBackendHostForEmulator(): String {
+            val uri = runCatching { URI(this) }.getOrNull() ?: return this
+            val host = uri.host?.lowercase() ?: return this
+            if (host !in setOf("localhost", "127.0.0.1", "0.0.0.0")) return this
+            return URI(
+                uri.scheme,
+                uri.userInfo,
+                EMULATOR_HOST_ALIAS,
+                uri.port,
+                uri.path,
+                uri.query,
+                uri.fragment
+            ).toString()
+        }
+
+        private fun isProbablyEmulator(): Boolean {
+            return Build.FINGERPRINT.startsWith("generic") ||
+                Build.FINGERPRINT.startsWith("unknown") ||
+                Build.MODEL.contains("google_sdk", ignoreCase = true) ||
+                Build.MODEL.contains("Emulator", ignoreCase = true) ||
+                Build.MODEL.contains("Android SDK built for", ignoreCase = true) ||
+                Build.MANUFACTURER.contains("Genymotion", ignoreCase = true) ||
+                Build.HARDWARE.contains("goldfish", ignoreCase = true) ||
+                Build.HARDWARE.contains("ranchu", ignoreCase = true) ||
+                (Build.BRAND.startsWith("generic") && Build.DEVICE.startsWith("generic")) ||
+                Build.PRODUCT.startsWith("sdk", ignoreCase = true) ||
+                Build.PRODUCT in setOf("google_sdk", "sdk", "sdk_gphone", "sdk_x86", "vbox86p")
+        }
 
         private fun createApi(baseUrl: String): TopNewsBackendApi {
             val client = OkHttpClient.Builder()
@@ -201,6 +269,7 @@ class TopNewsBackendRepository(
         }
 
         private fun String.withTrailingSlash(): String {
+            if (isBlank()) return this
             return if (endsWith("/")) this else "$this/"
         }
 

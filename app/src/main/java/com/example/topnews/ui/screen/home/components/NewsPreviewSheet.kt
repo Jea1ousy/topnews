@@ -59,6 +59,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -70,6 +73,7 @@ import coil.compose.AsyncImage
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.ui.theme.TopnewsTheme
 import kotlinx.coroutines.launch
+import java.net.URI
 import kotlin.math.roundToInt
 
 @Composable
@@ -90,6 +94,7 @@ fun NewsPreviewOverlay(
         }
         var isFullDetail by remember(article.id) { mutableStateOf(false) }
         var previewImageUrl by remember(article.id) { mutableStateOf<String?>(null) }
+        var isDismissing by remember(article.id) { mutableStateOf(false) }
 
         suspend fun animateCardTo(targetOffsetPx: Float) {
             animate(
@@ -105,9 +110,12 @@ fun NewsPreviewOverlay(
         }
 
         val dismissOverlay: () -> Unit = {
-            scope.launch {
-                animateCardTo(fullHeightPx)
-                onClose()
+            if (!isDismissing) {
+                isDismissing = true
+                scope.launch {
+                    animateCardTo(fullHeightPx)
+                    onClose()
+                }
             }
         }
 
@@ -119,7 +127,7 @@ fun NewsPreviewOverlay(
         BackHandler {
             if (previewImageUrl != null) {
                 previewImageUrl = null
-            } else {
+            } else if (!isDismissing) {
                 dismissOverlay()
             }
         }
@@ -130,15 +138,21 @@ fun NewsPreviewOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = scrimAlpha))
-                .pointerInput(article.id) {
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false).consume()
-                        do {
-                            val event = awaitPointerEvent()
-                            event.changes.forEach { it.consume() }
-                        } while (event.changes.any { it.pressed })
+                .then(
+                    if (isDismissing) {
+                        Modifier
+                    } else {
+                        Modifier.pointerInput(article.id) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false).consume()
+                                do {
+                                    val event = awaitPointerEvent()
+                                    event.changes.forEach { it.consume() }
+                                } while (event.changes.any { it.pressed })
+                            }
+                        }
                     }
-                }
+                )
         )
 
         val cornerRadius = (
@@ -159,7 +173,7 @@ fun NewsPreviewOverlay(
                 .draggable(
                     state = dragState,
                     orientation = Orientation.Vertical,
-                    enabled = !isFullDetail && previewImageUrl == null,
+                    enabled = !isFullDetail && previewImageUrl == null && !isDismissing,
                     onDragStopped = { velocity ->
                         scope.launch {
                             val shouldExpand = cardOffsetPx <= expandThresholdPx ||
@@ -276,6 +290,14 @@ private fun FullArticleDetail(
     onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val detailBlocks = remember(article.id, article.content, article.description, article.html, article.imageUrls) {
+        article.detailBlocks()
+    }
+    val inlineImageUrls = remember(detailBlocks) {
+        detailBlocks.mapNotNull { (it as? ArticleDetailBlock.Image)?.url }.toSet()
+    }
+    val hasInlineImages = inlineImageUrls.isNotEmpty()
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -301,7 +323,7 @@ private fun FullArticleDetail(
                 lineHeight = 29.sp,
                 modifier = Modifier.fillMaxWidth()
             )
-            if (article.imageUrl != null) {
+            if (article.imageUrl != null && article.imageUrl !in inlineImageUrls) {
                 Spacer(modifier = Modifier.height(20.dp))
                 PreviewImage(
                     imageUrl = article.imageUrl,
@@ -312,31 +334,47 @@ private fun FullArticleDetail(
                 )
             }
             Spacer(modifier = Modifier.height(20.dp))
-            ArticleBody(article = article)
-            ArticleImageGallery(
+            ArticleBody(
                 article = article,
+                blocks = detailBlocks,
                 onImageClick = onImageClick
             )
+            if (!hasInlineImages) {
+                ArticleImageGallery(
+                    article = article,
+                    onImageClick = onImageClick
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ArticleBody(article: NewsArticle) {
-    val paragraphs = remember(article.content, article.description, article.html) {
-        article.readableParagraphs()
-    }
-    paragraphs.forEachIndexed { index, paragraph ->
-        ArticleText(
-            article = article,
-            text = paragraph,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 18.sp,
-            lineHeight = 31.sp,
-            modifier = Modifier.fillMaxWidth()
-        )
-        if (index < paragraphs.lastIndex) {
-            Spacer(modifier = Modifier.height(14.dp))
+private fun ArticleBody(
+    article: NewsArticle,
+    blocks: List<ArticleDetailBlock>,
+    onImageClick: (String) -> Unit
+) {
+    blocks.forEachIndexed { index, block ->
+        when (block) {
+            is ArticleDetailBlock.Text -> {
+                ArticleRichText(
+                    article = article,
+                    block = block,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            is ArticleDetailBlock.Image -> {
+                PreviewImage(
+                    imageUrl = block.url,
+                    contentDescription = article.title,
+                    onClick = { onImageClick(block.url) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+        if (index < blocks.lastIndex) {
+            Spacer(modifier = Modifier.height(if (block is ArticleDetailBlock.Image) 18.dp else 14.dp))
         }
     }
 }
@@ -366,6 +404,55 @@ private fun ArticleText(
             lineHeight = lineHeight,
             fontWeight = FontWeight.Normal,
             modifier = modifier
+        )
+    }
+}
+
+@Composable
+private fun ArticleRichText(
+    article: NewsArticle,
+    block: ArticleDetailBlock.Text,
+    modifier: Modifier = Modifier
+) {
+    val color = when (block.role) {
+        ArticleTextRole.Quote -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val fontSize = when (block.role) {
+        ArticleTextRole.Heading -> 20.sp
+        ArticleTextRole.Quote -> 17.sp
+        else -> 18.sp
+    }
+    val lineHeight = when (block.role) {
+        ArticleTextRole.Heading -> 28.sp
+        ArticleTextRole.Quote -> 29.sp
+        else -> 31.sp
+    }
+    val fontWeight = when (block.role) {
+        ArticleTextRole.Heading -> FontWeight.SemiBold
+        else -> FontWeight.Normal
+    }
+    val textModifier = when (block.role) {
+        ArticleTextRole.Quote -> modifier.padding(start = 10.dp)
+        else -> modifier
+    }
+
+    if (article.channelName == ACADEMIC_CHANNEL_NAME && containsLatexFormula(block.plainText)) {
+        AcademicFormulaText(
+            text = block.plainText,
+            color = color,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            modifier = textModifier
+        )
+    } else {
+        Text(
+            text = block.value,
+            color = color,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
+            fontWeight = fontWeight,
+            modifier = textModifier
         )
     }
 }
@@ -630,15 +717,198 @@ private fun NewsArticle.readableBody(): String {
     return readableParagraphs().joinToString("\n\n")
 }
 
-private fun NewsArticle.readableParagraphs(): List<String> {
-    val rawBody = listOf(content, html, description)
-        .firstOrNull { it.isNotBlank() }
-        ?: return listOf("暂无更多正文内容。")
-    val normalized = rawBody
+private sealed interface ArticleDetailBlock {
+    data class Text(
+        val value: AnnotatedString,
+        val plainText: String,
+        val role: ArticleTextRole = ArticleTextRole.Paragraph
+    ) : ArticleDetailBlock
+
+    data class Image(val url: String) : ArticleDetailBlock
+}
+
+private enum class ArticleTextRole {
+    Paragraph,
+    Heading,
+    ListItem,
+    Quote
+}
+
+private fun NewsArticle.detailBlocks(): List<ArticleDetailBlock> {
+    val htmlBody = html.takeIf { IMG_TAG_REGEX.containsMatchIn(it) }
+    if (htmlBody != null) {
+        val htmlBlocks = parseHtmlDetailBlocks(
+            html = htmlBody,
+            baseUrl = link,
+            knownImageUrls = imageUrls
+        )
+        if (htmlBlocks.isNotEmpty()) {
+            return htmlBlocks
+        }
+    }
+
+    return readableParagraphs().map { ArticleDetailBlock.Text(AnnotatedString(it), it) }
+}
+
+private fun parseHtmlDetailBlocks(
+    html: String,
+    baseUrl: String,
+    knownImageUrls: List<String>
+): List<ArticleDetailBlock> {
+    val blocks = mutableListOf<ArticleDetailBlock>()
+    val seenImages = mutableSetOf<String>()
+    var cursor = 0
+
+    fun appendText(rawValue: String) {
+        blocks += parseHtmlTextBlocks(rawValue)
+    }
+
+    IMG_TAG_REGEX.findAll(html).forEach { match ->
+        appendText(html.substring(cursor, match.range.first))
+        val attrs = parseHtmlAttributes(match.value)
+        val imageUrl = inlineImageUrl(attrs, baseUrl, knownImageUrls)
+        if (imageUrl != null && seenImages.add(imageUrl)) {
+            blocks += ArticleDetailBlock.Image(imageUrl)
+        }
+        cursor = match.range.last + 1
+    }
+    appendText(html.substring(cursor))
+
+    return blocks
+}
+
+private fun parseHtmlTextBlocks(value: String): List<ArticleDetailBlock.Text> {
+    if (value.isBlank()) return emptyList()
+
+    val blocks = mutableListOf<ArticleDetailBlock.Text>()
+    var cursor = 0
+    var sawBlock = false
+
+    fun appendFallback(rawValue: String) {
+        blocks += fallbackHtmlTextBlocks(rawValue)
+    }
+
+    HTML_TEXT_BLOCK_REGEX.findAll(value).forEach { match ->
+        sawBlock = true
+        appendFallback(value.substring(cursor, match.range.first))
+
+        val tag = match.groupValues[1].lowercase()
+        val rawContent = match.groupValues[2]
+        val role = when {
+            tag.startsWith("h") -> ArticleTextRole.Heading
+            tag == "li" -> ArticleTextRole.ListItem
+            tag == "blockquote" -> ArticleTextRole.Quote
+            else -> ArticleTextRole.Paragraph
+        }
+        val prefix = if (role == ArticleTextRole.ListItem) "• " else ""
+        parseInlineRichText(rawContent, prefix)
+            ?.let { blocks += it.copy(role = role) }
+        cursor = match.range.last + 1
+    }
+
+    appendFallback(value.substring(cursor))
+
+    if (sawBlock) {
+        return blocks
+    }
+
+    return fallbackHtmlTextBlocks(value)
+}
+
+private fun parseInlineRichText(
+    value: String,
+    prefix: String = ""
+): ArticleDetailBlock.Text? {
+    val builder = AnnotatedString.Builder()
+    val styleStack = mutableListOf<String>()
+
+    if (prefix.isNotEmpty()) {
+        builder.append(prefix)
+    }
+
+    fun appendSegment(rawValue: String) {
+        val decoded = decodeHtmlText(rawValue)
+            .replace(Regex("[\\t\\n\\r ]+"), " ")
+        builder.append(decoded)
+    }
+
+    INLINE_HTML_TAG_REGEX.findAll(value).fold(0) { cursor, match ->
+        appendSegment(value.substring(cursor, match.range.first))
+        val rawTag = match.value
+        val tagName = htmlTagName(rawTag)
+        val isClosing = rawTag.startsWith("</")
+        val isSelfClosing = rawTag.endsWith("/>") || tagName == "br"
+
+        if (tagName == "br") {
+            builder.append("\n")
+        } else if (isClosing) {
+            if (styleStack.lastOrNull() == tagName) {
+                styleStack.removeAt(styleStack.lastIndex)
+                builder.pop()
+            }
+        } else if (!isSelfClosing) {
+            val style = when (tagName) {
+                "strong", "b" -> SpanStyle(fontWeight = FontWeight.Bold)
+                "em", "i" -> SpanStyle(fontStyle = FontStyle.Italic)
+                "code" -> SpanStyle(fontWeight = FontWeight.Medium)
+                else -> null
+            }
+            if (style != null) {
+                builder.pushStyle(style)
+                styleStack += tagName
+            }
+        }
+        match.range.last + 1
+    }.let { cursor ->
+        appendSegment(value.substring(cursor))
+    }
+
+    while (styleStack.isNotEmpty()) {
+        styleStack.removeAt(styleStack.lastIndex)
+        builder.pop()
+    }
+
+    val annotated = builder.toAnnotatedString().trimAnnotated()
+    val plainText = annotated.text.trim()
+    if (plainText.isBlank()) return null
+    return ArticleDetailBlock.Text(value = annotated, plainText = plainText)
+}
+
+private fun fallbackHtmlTextBlocks(value: String): List<ArticleDetailBlock.Text> {
+    val normalized = value
+        .replace(HTML_BREAK_REGEX, "\n")
+        .replace("\r\n", "\n")
+        .replace('\r', '\n')
+        .replace(MULTIPLE_NEWLINES_REGEX, "\n\n")
+        .trim()
+
+    if (normalized.isBlank()) {
+        return emptyList()
+    }
+
+    return normalized
+        .split(PARAGRAPH_BREAK_REGEX)
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .mapNotNull { rawParagraph ->
+            parseInlineRichText(rawParagraph)
+                ?: cleanHtmlParagraphs(rawParagraph)
+                    .firstOrNull()
+                    ?.let { ArticleDetailBlock.Text(AnnotatedString(it), it) }
+        }
+}
+
+private fun cleanHtmlParagraphs(value: String): List<String> {
+    val normalized = value
         .replace(HTML_BREAK_REGEX, "\n")
         .replace(HTML_TAG_REGEX, " ")
         .replace("&nbsp;", " ")
         .replace("&#160;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
         .replace("\r\n", "\n")
         .replace('\r', '\n')
         .lines()
@@ -649,7 +919,7 @@ private fun NewsArticle.readableParagraphs(): List<String> {
         .trim()
 
     if (normalized.isBlank()) {
-        return listOf("暂无更多正文内容。")
+        return emptyList()
     }
 
     return normalized
@@ -657,6 +927,81 @@ private fun NewsArticle.readableParagraphs(): List<String> {
         .map { it.trim() }
         .filter { it.isNotBlank() }
         .flatMap(::splitLongParagraph)
+}
+
+private fun AnnotatedString.trimAnnotated(): AnnotatedString {
+    val start = text.indexOfFirst { !it.isWhitespace() }
+    if (start < 0) return AnnotatedString("")
+    val end = text.indexOfLast { !it.isWhitespace() } + 1
+    return subSequence(start, end)
+}
+
+private fun parseHtmlAttributes(tag: String): Map<String, String> {
+    return HTML_ATTR_REGEX.findAll(tag).associate { match ->
+        match.groupValues[1].lowercase() to match.groupValues[2]
+    }
+}
+
+private fun htmlTagName(rawTag: String): String {
+    return rawTag
+        .removePrefix("<")
+        .removePrefix("/")
+        .trim()
+        .takeWhile { it.isLetterOrDigit() }
+        .lowercase()
+}
+
+private fun decodeHtmlText(value: String): String {
+    return value
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
+private fun inlineImageUrl(
+    attrs: Map<String, String>,
+    baseUrl: String,
+    knownImageUrls: List<String>
+): String? {
+    val srcset = attrs["srcset"] ?: attrs["data-srcset"]
+    val rawValue = if (!srcset.isNullOrBlank()) {
+        srcset.split(",", limit = 2).first().trim().split(Regex("\\s+"), limit = 2).firstOrNull()
+    } else {
+        listOf("data-original", "data-src", "data-lazy-src", "src")
+            .firstNotNullOfOrNull { key -> attrs[key]?.takeIf { it.isNotBlank() } }
+    }?.trim()
+
+    if (rawValue.isNullOrBlank() || rawValue.startsWith("data:image")) {
+        return null
+    }
+
+    knownImageUrls.firstOrNull { knownUrl ->
+        val knownPath = knownUrl.substringBefore("?").trimEnd('/')
+        val rawPath = rawValue.substringBefore("?").trimStart('/')
+        rawPath.isNotBlank() && knownPath.endsWith(rawPath)
+    }?.let { return it }
+
+    if (rawValue.startsWith("http://") || rawValue.startsWith("https://")) {
+        return rawValue
+    }
+    if (rawValue.startsWith("//")) {
+        val scheme = baseUrl.substringBefore("://", "https")
+        return "$scheme:$rawValue"
+    }
+
+    return runCatching { URI(baseUrl).resolve(rawValue).toString() }
+        .getOrElse { rawValue }
+}
+
+private fun NewsArticle.readableParagraphs(): List<String> {
+    val rawBody = listOf(content, html, description)
+        .firstOrNull { it.isNotBlank() }
+        ?: return listOf("暂无更多正文内容。")
+    return cleanHtmlParagraphs(rawBody).ifEmpty { listOf("暂无更多正文内容。") }
 }
 
 private fun splitLongParagraph(paragraph: String): List<String> {
@@ -708,6 +1053,10 @@ private const val ACADEMIC_CHANNEL_NAME = "学术推荐"
 private val HTML_BREAK_REGEX = Regex(
     "(?i)<\\s*br\\s*/?\\s*>|</\\s*(p|div|article|section|li|h[1-6])\\s*>"
 )
+private val IMG_TAG_REGEX = Regex("(?i)<\\s*img\\b[^>]*>")
+private val HTML_ATTR_REGEX = Regex("""([\w:-]+)\s*=\s*["']([^"']*)["']""")
+private val HTML_TEXT_BLOCK_REGEX = Regex("""(?is)<\s*(h[1-6]|p|li|blockquote)\b[^>]*>(.*?)</\s*\1\s*>""")
+private val INLINE_HTML_TAG_REGEX = Regex("(?is)<[^>]+>")
 private val HTML_TAG_REGEX = Regex("<[^>]+>")
 private val INLINE_WHITESPACE_REGEX = Regex("[\\t ]+")
 private val MULTIPLE_NEWLINES_REGEX = Regex("\\n{3,}")

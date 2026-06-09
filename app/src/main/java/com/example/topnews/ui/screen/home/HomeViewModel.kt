@@ -21,30 +21,33 @@ class HomeViewModel : ViewModel() {
     private val weatherRepository = WeatherRepository()
     private val pageSize = 20
 
-    private val _uiState = MutableStateFlow(HomeUiState(isLoading = true))
+    private val _uiState = MutableStateFlow(
+        HomeUiState(
+            feedsByCategory = mapOf(DEFAULT_CATEGORY to CategoryFeedState(isLoading = true))
+        )
+    )
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     init {
-        loadFirstPage(forceRefresh = false)
+        loadFirstPage(category = DEFAULT_CATEGORY, forceRefresh = false)
     }
 
     fun selectCategory(category: String) {
-        if (_uiState.value.selectedCategory == category) return
+        val state = _uiState.value
+        if (state.selectedCategory == category) return
+        val cachedFeed = state.feedFor(category)
+        val shouldLoad = cachedFeed.articles.isEmpty() && cachedFeed.error == null && !cachedFeed.isLoading
+
         _uiState.update {
-            it.copy(
-                selectedCategory = category,
-                articles = emptyList(),
-                seenArticleIds = emptySet(),
-                currentPage = 1,
-                hasMore = true,
-                error = null
-            )
+            it.copy(selectedCategory = category)
         }
-        loadFirstPage(forceRefresh = false)
+        if (shouldLoad) {
+            loadFirstPage(category = category, forceRefresh = false)
+        }
     }
 
     fun refresh() {
-        loadFirstPage(forceRefresh = true)
+        loadFirstPage(category = _uiState.value.selectedCategory, forceRefresh = true)
     }
 
     fun loadWeather(location: DeviceLocation) {
@@ -77,49 +80,51 @@ class HomeViewModel : ViewModel() {
         }
     }
 
-    private fun loadFirstPage(forceRefresh: Boolean) {
+    private fun loadFirstPage(category: String, forceRefresh: Boolean) {
         viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    isLoading = it.articles.isEmpty(),
-                    isRefreshing = it.articles.isNotEmpty(),
+            updateFeed(category) { feed ->
+                feed.copy(
+                    isLoading = feed.articles.isEmpty(),
+                    isRefreshing = feed.articles.isNotEmpty(),
+                    isLoadingMore = false,
                     error = null
                 )
             }
 
-            val category = _uiState.value.selectedCategory
+            val feed = _uiState.value.feedFor(category)
             runCatching {
                 repository.getTopNews(
                     page = 1,
                     pageSize = pageSize,
                     category = category,
                     forceRefresh = forceRefresh,
-                    excludeIds = if (forceRefresh) _uiState.value.seenArticleIds.toList() else emptyList()
+                    excludeIds = if (forceRefresh) feed.seenArticleIds.toList() else emptyList()
                 )
             }
                 .onSuccess { newsPage ->
-                    _uiState.update {
-                        val keepCurrent = forceRefresh && it.articles.isNotEmpty() && newsPage.articles.isEmpty()
-                        val nextArticles = if (keepCurrent) it.articles else newsPage.articles
-                        it.copy(
+                    updateFeed(category) { currentFeed ->
+                        val keepCurrent = forceRefresh && currentFeed.articles.isNotEmpty() && newsPage.articles.isEmpty()
+                        val nextArticles = if (keepCurrent) currentFeed.articles else newsPage.articles
+                        currentFeed.copy(
                             articles = nextArticles,
-                            seenArticleIds = (it.seenArticleIds + nextArticles.map { article -> article.id })
+                            seenArticleIds = (currentFeed.seenArticleIds + nextArticles.map { article -> article.id })
                                 .toList()
                                 .takeLast(300)
                                 .toSet(),
                             isLoading = false,
                             isRefreshing = false,
                             isLoadingMore = false,
-                            hasMore = if (keepCurrent) it.hasMore else newsPage.hasMore,
-                            currentPage = if (keepCurrent) it.currentPage else newsPage.page,
+                            hasMore = if (keepCurrent) currentFeed.hasMore else newsPage.hasMore,
+                            currentPage = if (keepCurrent) currentFeed.currentPage else newsPage.page,
                             lastUpdatedText = if (keepCurrent) "暂无新内容 ${currentTimeText()}" else "刷新于 ${currentTimeText()}",
                             error = null
                         )
                     }
                 }
                 .onFailure { throwable ->
-                    _uiState.update {
-                        it.copy(
+                    updateFeed(category) { currentFeed ->
+                        currentFeed.copy(
+                            articles = if (forceRefresh) currentFeed.articles else emptyList(),
                             isLoading = false,
                             isRefreshing = false,
                             isLoadingMore = false,
@@ -132,13 +137,16 @@ class HomeViewModel : ViewModel() {
 
     fun loadMore() {
         val state = _uiState.value
-        if (state.isLoading || state.isRefreshing || state.isLoadingMore || !state.hasMore) return
+        val category = state.selectedCategory
+        val feed = state.feedFor(category)
+        if (feed.isLoading || feed.isRefreshing || feed.isLoadingMore || !feed.hasMore) return
 
         viewModelScope.launch {
-            val nextPage = _uiState.value.currentPage + 1
-            _uiState.update { it.copy(isLoadingMore = true, error = null) }
+            val nextPage = feed.currentPage + 1
+            updateFeed(category) {
+                it.copy(isLoadingMore = true, error = null)
+            }
 
-            val category = _uiState.value.selectedCategory
             runCatching {
                 repository.getTopNews(
                     page = nextPage,
@@ -149,10 +157,10 @@ class HomeViewModel : ViewModel() {
                 )
             }
                 .onSuccess { nextPageResult ->
-                    _uiState.update {
-                        it.copy(
-                            articles = it.articles + nextPageResult.articles,
-                            seenArticleIds = (it.seenArticleIds + nextPageResult.articles.map { article -> article.id })
+                    updateFeed(category) { currentFeed ->
+                        currentFeed.copy(
+                            articles = currentFeed.articles + nextPageResult.articles,
+                            seenArticleIds = (currentFeed.seenArticleIds + nextPageResult.articles.map { article -> article.id })
                                 .toList()
                                 .takeLast(300)
                                 .toSet(),
@@ -164,8 +172,8 @@ class HomeViewModel : ViewModel() {
                     }
                 }
                 .onFailure { throwable ->
-                    _uiState.update {
-                        it.copy(
+                    updateFeed(category) { currentFeed ->
+                        currentFeed.copy(
                             isLoadingMore = false,
                             error = throwable.toUserMessage()
                         )
@@ -189,5 +197,20 @@ class HomeViewModel : ViewModel() {
 
     private fun currentTimeText(): String {
         return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+    }
+
+    private fun updateFeed(
+        category: String,
+        transform: (CategoryFeedState) -> CategoryFeedState
+    ) {
+        _uiState.update { state ->
+            state.copy(
+                feedsByCategory = state.feedsByCategory + (category to transform(state.feedFor(category)))
+            )
+        }
+    }
+
+    companion object {
+        private const val DEFAULT_CATEGORY = "推荐"
     }
 }

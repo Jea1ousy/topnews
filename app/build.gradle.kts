@@ -49,6 +49,11 @@ android {
             "TOPNEWS_BACKEND_BASE_URL",
             "\"${localProperty("TOPNEWS_BACKEND_BASE_URL").ifBlank { "http://10.0.2.2:8080/" }.replace("\"", "\\\"")}\""
         )
+        buildConfigField(
+            "String",
+            "TOPNEWS_BACKEND_LAN_BASE_URL",
+            "\"${localProperty("TOPNEWS_BACKEND_LAN_BASE_URL").replace("\"", "\\\"")}\""
+        )
     }
 
     buildTypes {

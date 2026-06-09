@@ -10,6 +10,36 @@ data class HomeUiState(
     val searchText: String = "AI前沿 | 学术推荐 | 新闻聚合",
     val selectedCategory: String = "推荐",
     val categories: List<String> = listOf("推荐", "AI前沿", "学术推荐", "国内", "国际", "科技", "财经", "体育", "娱乐"),
+    val feedsByCategory: Map<String, CategoryFeedState> = emptyMap()
+) {
+    val selectedFeed: CategoryFeedState
+        get() = feedFor(selectedCategory)
+
+    val articles: List<NewsArticle>
+        get() = selectedFeed.articles
+    val isLoading: Boolean
+        get() = selectedFeed.isLoading
+    val error: String?
+        get() = selectedFeed.error
+    val isRefreshing: Boolean
+        get() = selectedFeed.isRefreshing
+    val isLoadingMore: Boolean
+        get() = selectedFeed.isLoadingMore
+    val hasMore: Boolean
+        get() = selectedFeed.hasMore
+    val currentPage: Int
+        get() = selectedFeed.currentPage
+    val lastUpdatedText: String
+        get() = selectedFeed.lastUpdatedText
+    val seenArticleIds: Set<String>
+        get() = selectedFeed.seenArticleIds
+
+    fun feedFor(category: String): CategoryFeedState {
+        return feedsByCategory[category] ?: CategoryFeedState()
+    }
+}
+
+data class CategoryFeedState(
     val articles: List<NewsArticle> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,

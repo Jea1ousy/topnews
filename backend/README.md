@@ -22,7 +22,50 @@ python -m backend.topnews_backend.cli ingest --limit-per-source 20
 python -m backend.topnews_backend.cli keyword-add "RAG"
 python -m backend.topnews_backend.cli papers-ingest --limit 100 --source auto
 python -m backend.topnews_backend.cli paper-figures-ingest --limit 10
-python -m backend.topnews_backend.cli serve --host 127.0.0.1 --port 8080
+python -m backend.topnews_backend.cli fetch --news-limit 80 --papers-limit 100 --figures-limit 10
+python -m backend.topnews_backend.cli scheduler --news-interval-minutes 30 --papers-interval-minutes 180 --figures-interval-minutes 180
+python -m backend.topnews_backend.cli serve --host 0.0.0.0 --port 8080
+```
+
+Bash 一键抓取：
+
+```bash
+bash backend/scripts/fetch.sh --news-limit 80 --papers-limit 100 --figures-limit 10
+```
+
+Windows PowerShell 一键抓取：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File backend/scripts/fetch.ps1 -NewsLimit 80 -PapersLimit 100 -FiguresLimit 10
+```
+
+启动后端服务：
+
+```powershell
+python -m backend.topnews_backend.cli serve --host 0.0.0.0 --port 8080
+```
+
+Android 本地后端访问方式：
+
+- 模拟器：`local.properties` 可配置 `TOPNEWS_BACKEND_BASE_URL=http://127.0.0.1:8080/` 或 `http://10.0.2.2:8080/`。客户端会在模拟器中自动把 `localhost`、`127.0.0.1`、`0.0.0.0` 改写为 `10.0.2.2`。
+- USB 真机：可以执行 `adb reverse tcp:8080 tcp:8080` 后继续使用 `TOPNEWS_BACKEND_BASE_URL=http://127.0.0.1:8080/`。
+- 同一局域网真机：后端用 `--host 0.0.0.0` 启动，并在 `local.properties` 增加 `TOPNEWS_BACKEND_LAN_BASE_URL=http://电脑局域网IP:8080/`，例如 `http://192.168.1.23:8080/`。真机会优先使用这个地址。
+- 云后端：直接把 `TOPNEWS_BACKEND_BASE_URL` 改为云端地址即可，例如 `https://api.example.com/`；未配置 LAN 地址时模拟器和真机都会使用云端地址。
+
+常用覆盖项：
+
+```bash
+TOPNEWS_CONFIG=backend/sources.example.json TOPNEWS_DB=backend/data/topnews.db bash backend/scripts/fetch.sh
+bash backend/scripts/fetch.sh --paper-source rss --skip-figures
+bash backend/scripts/fetch.sh --skip-news --papers-limit 50 --force-figures
+```
+
+```powershell
+$env:TOPNEWS_CONFIG = "backend/sources.example.json"
+$env:TOPNEWS_DB = "backend/data/topnews.db"
+powershell -ExecutionPolicy Bypass -File backend/scripts/fetch.ps1 -PaperSource rss -SkipFigures
+powershell -ExecutionPolicy Bypass -File backend/scripts/fetch.ps1 -SkipNews -PapersLimit 50 -ForceFigures
+python -m backend.topnews_backend.cli serve --host 0.0.0.0 --port 8080
 ```
 
 接口地址：
@@ -81,6 +124,74 @@ python -m backend.topnews_backend.cli papers-ingest --limit 100 --source auto
 - `auto`：默认值，合并 RSS 与 API 结果并按论文 ID 去重；其中一种方式失败时仍可使用另一种方式的结果。
 
 arXiv 官方要求 legacy API、RSS 等访问遵守限速：单连接，并且不要超过每 3 秒 1 次请求。遇到 `HTTP Error 429` 时，通常说明被限流了，可以等待一会儿后改用 `--source rss` 重试。
+
+## 定时抓取
+
+后端内置了两个适合上云使用的抓取命令：
+
+```bash
+python -m backend.topnews_backend.cli fetch --news-limit 80 --papers-limit 100 --paper-source auto --figures-limit 10
+python -m backend.topnews_backend.cli scheduler --news-interval-minutes 30 --papers-interval-minutes 180 --figures-interval-minutes 180
+```
+
+- `fetch`：执行一次完整抓取，适合初始化数据库、手动补数据或 crontab 调用。
+- `scheduler`：常驻进程，默认启动时立即抓一次，之后每 30 分钟抓新闻、每 180 分钟抓论文和论文主图。
+- 如需关闭某类定时任务，可把对应间隔设为 `0`，例如 `--figures-interval-minutes 0`。
+- 日志以 JSON 行输出，适合通过 `journalctl` 查看。
+
+服务器建议同时运行两个 systemd 服务：一个负责 HTTP API，一个负责定时抓取。
+
+`/etc/systemd/system/topnews-api.service`：
+
+```ini
+[Unit]
+Description=TopNews API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/topnews
+Environment=TOPNEWS_CONFIG=/opt/topnews/backend/sources.example.json
+Environment=TOPNEWS_DB=/opt/topnews/backend/data/topnews.db
+ExecStart=/opt/topnews/.venv/bin/python -m backend.topnews_backend.cli serve --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/topnews-scheduler.service`：
+
+```ini
+[Unit]
+Description=TopNews scheduled fetch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/topnews
+Environment=TOPNEWS_CONFIG=/opt/topnews/backend/sources.example.json
+Environment=TOPNEWS_DB=/opt/topnews/backend/data/topnews.db
+ExecStart=/opt/topnews/.venv/bin/python -m backend.topnews_backend.cli scheduler --news-interval-minutes 30 --papers-interval-minutes 180 --figures-interval-minutes 180 --paper-source auto
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用服务：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now topnews-api topnews-scheduler
+sudo systemctl status topnews-api
+sudo systemctl status topnews-scheduler
+journalctl -u topnews-scheduler -f
+```
 
 ## arXiv 论文主图
 

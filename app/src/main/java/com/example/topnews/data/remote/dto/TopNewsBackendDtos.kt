@@ -38,8 +38,14 @@ data class BackendNewsDto(
     val summary: String?,
     @SerializedName("content")
     val content: String?,
+    @SerializedName("content_html")
+    val contentHtml: String?,
+    @SerializedName("html")
+    val html: String?,
     @SerializedName("image_url")
     val imageUrl: String?,
+    @SerializedName("image_source_url")
+    val imageSourceUrl: String?,
     @SerializedName("image_urls")
     val imageUrls: List<String>?,
     @SerializedName("published_at")
