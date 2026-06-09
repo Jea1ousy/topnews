@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .config import AppConfig
+from .fetchers import FetchError
+from .paper_figures import fetch_remote_image
 from .service import NewsAggregator
 from .storage import NewsStore, Page, article_to_dict, keyword_to_dict, paper_to_dict
 
@@ -60,6 +62,41 @@ class TopNewsApi:
                 return self.write_json(request, HTTPStatus.OK, [asdict(source) for source in self.aggregator.enabled_sources])
             if method == "GET" and parsed.path == "/v1/categories":
                 return self.write_json(request, HTTPStatus.OK, self.store.categories())
+            if method == "GET" and parsed.path.startswith("/v1/articles/") and parsed.path.endswith("/image"):
+                external_id = urllib.parse.unquote(parsed.path[len("/v1/articles/") : -len("/image")].rstrip("/"))
+                image = self.store.get_article_image(external_id)
+                if not image:
+                    image_urls = self.store.get_article_image_sources(external_id)
+                    if not image_urls:
+                        return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "article_image_not_found"})
+                    errors: list[str] = []
+                    fetched_image = None
+                    fetched_image_url = None
+                    for image_url in image_urls:
+                        try:
+                            fetched_image = fetch_remote_image(
+                                image_url,
+                                timeout=self.config.request_timeout,
+                                user_agent=self.config.user_agent,
+                            )
+                            fetched_image_url = image_url
+                            break
+                        except FetchError as exc:
+                            errors.append(f"{image_url}: {exc}")
+                    if not fetched_image or not fetched_image_url:
+                        return self.write_json(
+                            request,
+                            HTTPStatus.BAD_GATEWAY,
+                            {"error": "article_image_fetch_failed", "message": "; ".join(errors[:3])},
+                        )
+                    self.store.update_article_image_cache(
+                        external_id,
+                        image_data=fetched_image.data,
+                        image_mime_type=fetched_image.mime_type,
+                        image_url=fetched_image_url,
+                    )
+                    image = (fetched_image.data, fetched_image.mime_type)
+                return self.write_binary(request, HTTPStatus.OK, image[0], image[1])
             if method == "GET" and parsed.path.startswith("/v1/papers/") and parsed.path.endswith("/image"):
                 external_id = urllib.parse.unquote(parsed.path[len("/v1/papers/") : -len("/image")].rstrip("/"))
                 image = self.store.get_paper_image(external_id)
@@ -241,7 +278,7 @@ class TopNewsApi:
                         "pubDate": article.published_at or article.fetched_at,
                         "desc": article_to_dict(article)["summary"],
                         "content": article.content,
-                        "html": "",
+                        "html": article.content_html,
                         "link": article.url,
                         "channelId": article.category,
                         "channelName": article.category,

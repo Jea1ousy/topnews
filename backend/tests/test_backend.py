@@ -7,6 +7,8 @@ from backend.topnews_backend.classifier import classify
 from backend.topnews_backend.config import SourceConfig
 from backend.topnews_backend.fetchers import parse_portal, parse_rss
 from backend.topnews_backend.paper_figures import build_arxiv_html_url, parse_arxiv_primary_figure
+from backend.topnews_backend.scheduler import FetchOptions, ScheduleOptions, _build_jobs, run_fetch_once
+from backend.topnews_backend.service import IngestResult
 from backend.topnews_backend.storage import Article, NewsStore, Paper, article_to_dict, paper_to_dict
 from backend.topnews_backend.summary import build_summary
 
@@ -43,14 +45,34 @@ class BackendTest(unittest.TestCase):
             ("https://example.com/cover.jpg", "https://example.com/detail.jpg"),
         )
         self.assertEqual(articles[0].content, "第一段介绍政策背景。\n\n第二段说明政策影响。")
+        self.assertIn('<img src="/cover.jpg" />', articles[0].content_html)
         with tempfile.TemporaryDirectory() as temp_dir:
             store = NewsStore(Path(temp_dir) / "topnews.db")
             self.assertEqual(store.upsert_articles(articles), 1)
             stored = store.list_articles(page=1, page_size=1).items[0]
+            payload = article_to_dict(stored)
+            self.assertIn('<img data-src="/detail.jpg" />', payload["html"])
+            self.assertEqual(payload["image_source_url"], "https://example.com/cover.jpg")
+            self.assertEqual(payload["image_url"], f"/v1/articles/{stored.external_id}/image")
             self.assertEqual(
-                article_to_dict(stored)["image_urls"],
+                payload["image_urls"],
                 ["https://example.com/cover.jpg", "https://example.com/detail.jpg"],
             )
+            self.assertIsNone(store.get_article_image(stored.external_id))
+            self.assertEqual(
+                store.get_article_image_sources(stored.external_id),
+                ["https://example.com/cover.jpg", "https://example.com/detail.jpg"],
+            )
+            self.assertTrue(
+                store.update_article_image_cache(
+                    stored.external_id,
+                    b"fake-jpg",
+                    "image/jpeg",
+                    image_url="https://example.com/detail.jpg",
+                )
+            )
+            self.assertEqual(store.get_article_image(stored.external_id), (b"fake-jpg", "image/jpeg"))
+            self.assertEqual(store.list_articles(page=1, page_size=1).items[0].image_url, "https://example.com/detail.jpg")
 
     def test_parse_portal(self):
         source = SourceConfig(name="测试门户", url="https://example.com/news/", kind="portal")
@@ -289,6 +311,51 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(figure.image_url, "https://arxiv.org/html/2605.00001v1/overview.png")
         self.assertEqual(figure.caption, "Figure 2: Model overview.")
         self.assertEqual(build_arxiv_html_url("https://arxiv.org/abs/2605.00001v1"), "https://arxiv.org/html/2605.00001v1")
+
+    def test_run_fetch_once_respects_skip_flags(self):
+        aggregator = FakeAggregator()
+        results = run_fetch_once(
+            aggregator,
+            FetchOptions(news_limit=7, papers_limit=11, paper_source="rss", figures_limit=13, figure_delay_seconds=2.5),
+            skip_figures=True,
+        )
+
+        self.assertEqual(aggregator.calls, [("news", 7), ("papers", 11, "rss")])
+        self.assertEqual([result.source for result in results], ["news", "papers"])
+
+    def test_scheduler_builds_enabled_jobs(self):
+        jobs = _build_jobs(
+            FakeAggregator(),
+            FetchOptions(news_limit=7, papers_limit=11, figures_limit=13),
+            ScheduleOptions(
+                news_interval_minutes=10,
+                papers_interval_minutes=0,
+                figures_interval_minutes=60,
+                run_on_start=False,
+            ),
+            now=100.0,
+        )
+
+        self.assertEqual([job.name for job in jobs], ["news", "figures"])
+        self.assertEqual([job.interval_seconds for job in jobs], [600, 3600])
+        self.assertEqual([job.next_run for job in jobs], [700.0, 3700.0])
+
+
+class FakeAggregator:
+    def __init__(self):
+        self.calls = []
+
+    def ingest(self, limit_per_source=30):
+        self.calls.append(("news", limit_per_source))
+        return [IngestResult(source="news", ok=True, fetched=1, stored=1)]
+
+    def ingest_papers(self, limit=30, source="auto"):
+        self.calls.append(("papers", limit, source))
+        return IngestResult(source="papers", ok=True, fetched=1, stored=1)
+
+    def ingest_paper_figures(self, limit=10, delay_seconds=3.0, force=False):
+        self.calls.append(("figures", limit, delay_seconds, force))
+        return IngestResult(source="figures", ok=True, fetched=1, stored=1)
 
 
 if __name__ == "__main__":

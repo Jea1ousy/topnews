@@ -109,6 +109,14 @@ def fetch_paper_figure_image(
     timeout: float,
     user_agent: str,
 ) -> PaperFigureImage:
+    return fetch_remote_image(image_url, timeout=timeout, user_agent=user_agent)
+
+
+def fetch_remote_image(
+    image_url: str,
+    timeout: float,
+    user_agent: str,
+) -> PaperFigureImage:
     request = urllib.request.Request(
         image_url,
         headers={"User-Agent": user_agent, "Accept": "image/jpeg,image/png,image/webp,image/gif"},
@@ -117,20 +125,20 @@ def fetch_paper_figure_image(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             content_length = int(response.headers.get("Content-Length", "0") or 0)
             if content_length > MAX_IMAGE_BYTES:
-                raise FetchError(f"Paper figure is too large: {content_length} bytes")
+                raise FetchError(f"Remote image is too large: {content_length} bytes")
             data = response.read(MAX_IMAGE_BYTES + 1)
             if len(data) > MAX_IMAGE_BYTES:
-                raise FetchError(f"Paper figure is too large: more than {MAX_IMAGE_BYTES} bytes")
+                raise FetchError(f"Remote image is too large: more than {MAX_IMAGE_BYTES} bytes")
             mime_type = response.headers.get_content_type()
     except (TimeoutError, urllib.error.URLError) as exc:
-        raise FetchError(f"Fetch failed for paper figure {image_url}: {exc}") from exc
+        raise FetchError(f"Fetch failed for remote image {image_url}: {exc}") from exc
 
     if mime_type == "application/octet-stream":
         mime_type = mimetypes.guess_type(image_url)[0] or mime_type
     if mime_type not in SUPPORTED_IMAGE_TYPES:
-        raise FetchError(f"Unsupported paper figure type: {mime_type}")
+        raise FetchError(f"Unsupported remote image type: {mime_type}")
     if not data:
-        raise FetchError(f"Paper figure is empty: {image_url}")
+        raise FetchError(f"Remote image is empty: {image_url}")
     return PaperFigureImage(data=data, mime_type=mime_type)
 
 

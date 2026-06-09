@@ -43,8 +43,10 @@ class Article:
     category: str
     description: str
     content: str
+    content_html: str
     image_url: str | None
     image_urls: list[str]
+    image_cached: bool
     published_at: str | None
     fetched_at: str
 
@@ -128,6 +130,7 @@ class NewsStore:
                     category TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
                     content TEXT NOT NULL DEFAULT '',
+                    content_html TEXT NOT NULL DEFAULT '',
                     image_url TEXT,
                     image_urls TEXT NOT NULL DEFAULT '[]',
                     published_at TEXT,
@@ -135,7 +138,11 @@ class NewsStore:
                 )
                 """
             )
+            _ensure_column(connection, "articles", "content_html", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(connection, "articles", "image_urls", "TEXT NOT NULL DEFAULT '[]'")
+            _ensure_column(connection, "articles", "image_data", "BLOB")
+            _ensure_column(connection, "articles", "image_mime_type", "TEXT")
+            _ensure_column(connection, "articles", "image_cached_at", "TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles(region)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at)")
@@ -193,9 +200,9 @@ class NewsStore:
                     """
                     INSERT INTO articles (
                         external_id, title, url, source, region, category,
-                        description, content, image_url, image_urls, published_at, fetched_at
+                        description, content, content_html, image_url, image_urls, published_at, fetched_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(external_id) DO UPDATE SET
                         title=excluded.title,
                         source=excluded.source,
@@ -203,6 +210,19 @@ class NewsStore:
                         category=excluded.category,
                         description=excluded.description,
                         content=excluded.content,
+                        content_html=excluded.content_html,
+                        image_data=CASE
+                            WHEN excluded.image_url IS NOT articles.image_url THEN NULL
+                            ELSE articles.image_data
+                        END,
+                        image_mime_type=CASE
+                            WHEN excluded.image_url IS NOT articles.image_url THEN NULL
+                            ELSE articles.image_mime_type
+                        END,
+                        image_cached_at=CASE
+                            WHEN excluded.image_url IS NOT articles.image_url THEN NULL
+                            ELSE articles.image_cached_at
+                        END,
                         image_url=excluded.image_url,
                         image_urls=excluded.image_urls,
                         published_at=COALESCE(excluded.published_at, articles.published_at),
@@ -217,6 +237,7 @@ class NewsStore:
                         article.category,
                         article.description,
                         article.content,
+                        article.content_html,
                         article.image_url,
                         json.dumps(article.image_urls, ensure_ascii=False),
                         article.published_at,
@@ -245,7 +266,10 @@ class NewsStore:
             total_count = connection.execute(f"SELECT COUNT(*) AS total FROM articles a {where}", params).fetchone()["total"]
             rows = connection.execute(
                 f"""
-                SELECT a.*
+                SELECT
+                    a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
+                    a.description, a.content, a.content_html, a.image_url, a.image_urls,
+                    a.published_at, a.fetched_at, a.image_data IS NOT NULL AS image_cached
                 FROM articles a
                 {where}
                 ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
@@ -274,7 +298,10 @@ class NewsStore:
             total_count = connection.execute(f"SELECT COUNT(*) AS total FROM articles a {where}", params).fetchone()["total"]
             rows = connection.execute(
                 f"""
-                SELECT a.*,
+                SELECT
+                    a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
+                    a.description, a.content, a.content_html, a.image_url, a.image_urls,
+                    a.published_at, a.fetched_at, a.image_data IS NOT NULL AS image_cached,
                     CASE
                         WHEN a.image_url IS NOT NULL AND a.image_url != '' THEN 6
                         ELSE 0
@@ -363,6 +390,59 @@ class NewsStore:
             cursor = connection.execute(
                 "UPDATE academic_keywords SET enabled = 0 WHERE id = ? AND enabled = 1",
                 (keyword_id,),
+            )
+        return cursor.rowcount > 0
+
+    def get_article_image(self, external_id: str) -> tuple[bytes, str] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT image_data, image_mime_type
+                FROM articles
+                WHERE external_id = ? AND image_data IS NOT NULL
+                """,
+                (external_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return bytes(row["image_data"]), row["image_mime_type"] or "application/octet-stream"
+
+    def get_article_image_sources(self, external_id: str) -> list[str]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT image_url, image_urls
+                FROM articles
+                WHERE external_id = ?
+                """,
+                (external_id,),
+            ).fetchone()
+        if not row:
+            return []
+        return _article_images(row["image_url"], _json_string_list(row["image_urls"]))
+
+    def update_article_image_cache(
+        self,
+        external_id: str,
+        image_data: bytes,
+        image_mime_type: str,
+        image_url: str | None = None,
+    ) -> bool:
+        cached_at = datetime.now(timezone.utc).isoformat()
+        image_clause = ", image_url = ?" if image_url else ""
+        params: tuple[object, ...] = (
+            (image_data, image_mime_type, cached_at, image_url, external_id)
+            if image_url
+            else (image_data, image_mime_type, cached_at, external_id)
+        )
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE articles
+                SET image_data = ?, image_mime_type = ?, image_cached_at = ?{image_clause}
+                WHERE external_id = ?
+                """,
+                params,
             )
         return cursor.rowcount > 0
 
@@ -587,7 +667,10 @@ class NewsStore:
             total_count = connection.execute(f"SELECT COUNT(*) AS total FROM articles a {where}", params).fetchone()["total"]
             rows = connection.execute(
                 f"""
-                SELECT a.*
+                SELECT
+                    a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
+                    a.description, a.content, a.content_html, a.image_url, a.image_urls,
+                    a.published_at, a.fetched_at, a.image_data IS NOT NULL AS image_cached
                 FROM articles a
                 {where}
                 ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
@@ -634,6 +717,14 @@ class NewsStore:
 
 def article_to_dict(article: Article) -> dict[str, object]:
     payload = asdict(article)
+    payload.pop("image_cached", None)
+    payload["image_source_url"] = article.image_url
+    payload["image_url"] = (
+        f"/v1/articles/{urllib.parse.quote(article.external_id, safe='')}/image"
+        if article.image_url
+        else None
+    )
+    payload["html"] = article.content_html
     payload["image_urls"] = _article_images(article.image_url, article.image_urls)
     payload["item_type"] = "news"
     payload["summary"] = build_summary(article.description, article.content, article.title)
@@ -681,8 +772,10 @@ def _row_to_article(row: sqlite3.Row) -> Article:
         category=row["category"],
         description=row["description"],
         content=row["content"],
+        content_html=row["content_html"],
         image_url=row["image_url"],
         image_urls=_article_images(row["image_url"], _json_string_list(row["image_urls"])),
+        image_cached=bool(row["image_cached"]),
         published_at=row["published_at"],
         fetched_at=row["fetched_at"],
     )

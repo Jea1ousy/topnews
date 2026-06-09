@@ -23,6 +23,7 @@ class RawArticle:
     source: str
     description: str = ""
     content: str = ""
+    content_html: str = ""
     image_url: str | None = None
     image_urls: tuple[str, ...] = ()
     published_at: str | None = None
@@ -79,7 +80,7 @@ def parse_rss(body: bytes, source: SourceConfig, limit: int = 30) -> list[RawArt
                 *_images_from_html(content, source.url),
             ]
         )
-        articles.append(_article_from_values(source, title, link, description, content, image_urls, published_at))
+        articles.append(_article_from_values(source, title, link, description, content, content or description, image_urls, published_at))
 
     return articles
 
@@ -98,7 +99,7 @@ def parse_portal(body: bytes, source: SourceConfig, limit: int = 30) -> list[Raw
         seen_urls.add(url)
         image_url = link.image_url or parser.image_for_title(clean_title) or parser.image_url
         image_urls = _dedupe_images([image_url] if image_url else [])
-        articles.append(_article_from_values(source, clean_title, url, parser.description, "", image_urls, None))
+        articles.append(_article_from_values(source, clean_title, url, parser.description, "", "", image_urls, None))
         if len(articles) >= limit:
             break
 
@@ -182,6 +183,7 @@ def _article_from_values(
     url: str,
     description: str,
     content: str,
+    content_html: str,
     image_urls: tuple[str, ...],
     published_at: str | None,
 ) -> RawArticle:
@@ -195,6 +197,7 @@ def _article_from_values(
         source=source.name,
         description=_clean_text(description),
         content=_clean_text(content),
+        content_html=content_html.strip(),
         image_url=image_urls[0] if image_urls else None,
         image_urls=image_urls,
         published_at=published_at,
