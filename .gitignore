@@ -1,6 +1,7 @@
 *.iml
 .gradle
 /local.properties
+/.idea/
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
@@ -20,3 +21,5 @@ backend/data/
 __pycache__/
 .pytest_cache/
 documents/development-log-*.md
+
+/.claude
