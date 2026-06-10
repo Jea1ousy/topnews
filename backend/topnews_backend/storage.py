@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import json
 import sqlite3
@@ -808,7 +809,7 @@ def article_to_dict(article: Article) -> dict[str, object]:
     payload.pop("image_cached", None)
     payload["image_source_url"] = article.image_url
     payload["image_url"] = (
-        f"/v1/articles/{urllib.parse.quote(article.external_id, safe='')}/image"
+        f"/v1/articles/{urllib.parse.quote(article.external_id, safe='')}/image?v={_image_version(article.image_url)}"
         if article.image_url
         else None
     )
@@ -822,6 +823,10 @@ def article_to_dict(article: Article) -> dict[str, object]:
 
 def keyword_to_dict(keyword: AcademicKeyword) -> dict[str, object]:
     return asdict(keyword)
+
+
+def _image_version(image_url: str | None) -> str:
+    return hashlib.sha1((image_url or "").encode("utf-8")).hexdigest()[:12]
 
 
 def paper_to_dict(paper: Paper) -> dict[str, object]:

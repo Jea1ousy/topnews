@@ -54,7 +54,7 @@ class BackendTest(unittest.TestCase):
             payload = article_to_dict(stored)
             self.assertIn('<img data-src="/detail.jpg" />', payload["html"])
             self.assertEqual(payload["image_source_url"], "https://example.com/cover.jpg")
-            self.assertEqual(payload["image_url"], f"/v1/articles/{stored.external_id}/image")
+            self.assertTrue(payload["image_url"].startswith(f"/v1/articles/{stored.external_id}/image?v="))
             self.assertEqual(
                 payload["image_urls"],
                 ["https://example.com/cover.jpg", "https://example.com/detail.jpg"],
@@ -117,6 +117,7 @@ class BackendTest(unittest.TestCase):
         <html><body><article>
           <p>新华社详情页正文内容足够长，应该保留这段文本。</p>
           <img src="/images/ewm.jpg" alt="扫一扫下载客户端">
+          <img src="/politics/leaders/20260609/zxcode_abc123.jpg">
           <img src="/images/news-cover.jpg" alt="新闻现场图片">
         </article></body></html>
         """.encode()
@@ -173,6 +174,36 @@ class BackendTest(unittest.TestCase):
         self.assertIn("<p>详情页第二段正文继续补充更多信息。</p>", articles[0].content_html)
         self.assertEqual(articles[0].image_url, "https://example.com/detail.jpg")
 
+    def test_fetch_source_prefers_detail_page_for_36kr(self):
+        source = SourceConfig(name="36氪快讯", url="https://example.com/rss", kind="rss")
+        rss_body = """
+        <rss><channel><item>
+            <title>印度多家银行上调外币存款利率以吸引外资流入</title>
+            <link>https://example.com/a</link>
+            <description><![CDATA[
+                <p>36氪Auto 数字时氪 未来消费 智能涌现 未来城市 启动 Power on</p>
+                <img src="/volcengine-ad.jpg" alt="火山引擎" />
+            ]]></description>
+        </item></channel></rss>
+        """.encode()
+        detail_body = """
+        <html><body><article>
+          <p>印度多家银行近期上调外币存款利率，以吸引更多外资流入。</p>
+          <p>业内人士认为，相关调整与市场流动性和汇率预期有关。</p>
+          <img src="/real-bank-cover.jpg" alt="银行新闻配图">
+        </article></body></html>
+        """.encode()
+
+        def fake_download(url, timeout, user_agent):
+            return rss_body if url == source.url else detail_body
+
+        with patch("backend.topnews_backend.fetchers._download", side_effect=fake_download):
+            articles = fetch_source(source, timeout=1, user_agent="test", limit=1)
+
+        self.assertNotIn("36氪Auto", articles[0].content)
+        self.assertIn("印度多家银行近期上调外币存款利率", articles[0].content)
+        self.assertEqual(articles[0].image_url, "https://example.com/real-bank-cover.jpg")
+
     def test_fetch_source_enriches_portal_articles_from_detail_page(self):
         source = SourceConfig(name="新华社首页", url="https://example.com/", kind="portal")
         portal_body = """
@@ -198,6 +229,30 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertIn("新华社详情页第一段正文足够长", articles[0].content)
         self.assertEqual(articles[0].image_url, "https://example.com/xinhua-cover.jpg")
+
+    def test_parse_xinhua_portal_uses_separate_image_link_for_same_article_url(self):
+        source = SourceConfig(name="新华社首页", url="https://www.news.cn/", kind="portal")
+        body = """
+        <html><body>
+          <li>
+            <div class="img">
+              <a href="https://www.news.cn/politics/leaders/20260610/f1ef0b1e02954794bc5b09bd3234d5c3/c.html">
+                <img src="20260610/0ad468ad3a2446d4be0eaf9e0cd9154d/029ade72dd4c4f1fa8a0e9b8ff99a213.jpg">
+              </a>
+            </div>
+            <div class="tit">
+              <a href="https://www.news.cn/politics/leaders/20260610/f1ef0b1e02954794bc5b09bd3234d5c3/c.html">
+                习近平总书记国事访问续写<i>中朝</i>传统友谊崭新篇章
+              </a>
+            </div>
+          </li>
+        </body></html>
+        """.encode()
+
+        articles = parse_portal(body, source)
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].image_url, "https://www.news.cn/20260610/0ad468ad3a2446d4be0eaf9e0cd9154d/029ade72dd4c4f1fa8a0e9b8ff99a213.jpg")
 
     def test_parse_xinhua_portal_filters_non_news_and_foreign_links(self):
         source = SourceConfig(name="新华社首页", url="https://www.news.cn/", kind="portal")

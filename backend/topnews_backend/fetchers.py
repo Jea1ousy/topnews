@@ -146,7 +146,7 @@ def _enrich_short_articles_from_pages(
     enriched: list[RawArticle] = []
     details_fetched = 0
     for article in articles:
-        if _should_fetch_article_detail(article) and details_fetched < MAX_DETAIL_PAGES_PER_SOURCE:
+        if _should_fetch_article_detail(article, source) and details_fetched < MAX_DETAIL_PAGES_PER_SOURCE:
             details_fetched += 1
             try:
                 detail = parse_article_detail(_download(article.url, timeout, user_agent), article.url)
@@ -157,20 +157,28 @@ def _enrich_short_articles_from_pages(
     return enriched
 
 
-def _should_fetch_article_detail(article: RawArticle) -> bool:
+def _should_fetch_article_detail(article: RawArticle, source: SourceConfig) -> bool:
     if not article.url.startswith(("http://", "https://")):
         return False
+    if _prefers_detail_page_content(source):
+        return True
     content_length = len(_clean_inline_text(article.content or article.description))
     return content_length < MIN_DETAIL_CONTENT_CHARS or not article.content_html
 
 
 def _merge_article_detail(article: RawArticle, detail: ArticleDetail, source: SourceConfig) -> RawArticle:
-    content = detail.content if len(detail.content) > len(article.content) else article.content
+    prefer_detail = _prefers_detail_page_content(source)
+    content = detail.content if (prefer_detail and detail.content) or len(detail.content) > len(article.content) else article.content
     description = article.description or detail.description
     if detail.description and len(article.description) < 20:
         description = detail.description
-    content_html = detail.content_html if detail.content_html and len(detail.content) >= len(article.content) else article.content_html
-    image_urls = _dedupe_images([*article.image_urls, *detail.image_urls])
+    content_html = (
+        detail.content_html
+        if detail.content_html and (prefer_detail or len(detail.content) >= len(article.content))
+        else article.content_html
+    )
+    image_candidates = [*detail.image_urls] if prefer_detail and detail.content else [*article.image_urls, *detail.image_urls]
+    image_urls = _dedupe_images(image_candidates)
     classification = classify(article.title, description or content, source.name)
     return replace(
         article,
@@ -182,6 +190,10 @@ def _merge_article_detail(article: RawArticle, detail: ArticleDetail, source: So
         category=source.category or classification.category,
         region=source.region or classification.region,
     )
+
+
+def _prefers_detail_page_content(source: SourceConfig) -> bool:
+    return any(name in source.name for name in DETAIL_PREFERRED_SOURCE_NAMES)
 
 
 def parse_cls_telegraph(body: bytes, source: SourceConfig, limit: int = 30) -> list[RawArticle]:
@@ -272,6 +284,7 @@ class PortalParser(HTMLParser):
         self.description = ""
         self.image_url: str | None = None
         self.images: list[tuple[str, str]] = []
+        self.images_by_url: dict[str, str] = {}
         self._current_href: str | None = None
         self._current_text: list[str] = []
         self._current_image_url: str | None = None
@@ -291,7 +304,9 @@ class PortalParser(HTMLParser):
             if name in {"description", "og:description"} and content and not self.description:
                 self.description = _clean_text(content)
             if name in {"og:image", "twitter:image"} and content and not self.image_url:
-                self.image_url = urllib.parse.urljoin(self.base_url, content)
+                image_url = _absolute_image_url(content, self.base_url)
+                if image_url and not _looks_decorative_image(image_url):
+                    self.image_url = image_url
         elif tag.lower() == "img":
             image_url = _image_from_attrs(attr_map, self.base_url)
             image_text = _clean_inline_text(attr_map.get("alt", "") or attr_map.get("title", ""))
@@ -311,7 +326,10 @@ class PortalParser(HTMLParser):
         if tag.lower() == "a" and self._current_href:
             text = _dedupe_repeated_title(_clean_inline_text("".join(self._current_text)))
             if text:
-                self.links.append(PortalLink(title=text, url=self._current_href, image_url=self._current_image_url))
+                image_url = self._current_image_url or self.images_by_url.get(self._current_href)
+                self.links.append(PortalLink(title=text, url=self._current_href, image_url=image_url))
+            elif self._current_image_url:
+                self.images_by_url.setdefault(self._current_href, self._current_image_url)
             self._current_href = None
             self._current_text = []
             self._current_image_url = None
@@ -575,6 +593,7 @@ def _looks_decorative_image(url: str) -> bool:
             "wechat",
             "wxcode",
             "appcode",
+            "zxcode",
             "placeholder",
             "default",
             "blank",
@@ -662,8 +681,6 @@ def _parse_china_local_time(value: str) -> str | None:
 def _is_portal_article_link(title: str, url: str, source: SourceConfig) -> bool:
     if len(title) < 6:
         return False
-    if not _looks_like_chinese_news_title(title):
-        return False
     if title.lower() in PORTAL_NON_ARTICLE_TITLES:
         return False
     if re.fullmatch(r"[\d\s+\-()]{6,}", title):
@@ -677,6 +694,8 @@ def _is_portal_article_link(title: str, url: str, source: SourceConfig) -> bool:
 
     source_host = urllib.parse.urlparse(source.url).netloc.lower()
     if "news.cn" in source_host or "xinhuanet.com" in source_host:
+        if not _looks_like_chinese_news_title(title):
+            return False
         if host and not (host.endswith("news.cn") or host.endswith("xinhuanet.com")):
             return False
         if path.startswith(PORTAL_NON_ARTICLE_PATH_PREFIXES):
@@ -749,6 +768,7 @@ def _local_name(tag: str) -> str:
 MAX_ARTICLE_IMAGES = 9
 MIN_DETAIL_CONTENT_CHARS = 260
 MAX_DETAIL_PAGES_PER_SOURCE = 12
+DETAIL_PREFERRED_SOURCE_NAMES = {"36氪"}
 
 ARTICLE_DETAIL_TEXT_TAGS = {"p", "h1", "h2", "h3", "h4", "blockquote", "li"}
 
@@ -785,6 +805,8 @@ ARTICLE_IMAGE_JUNK_TEXT = {
     "赞助",
     "阿里云",
     "aliyun",
+    "火山引擎",
+    "volcengine",
     "二维码",
     "扫码",
     "扫一扫",
