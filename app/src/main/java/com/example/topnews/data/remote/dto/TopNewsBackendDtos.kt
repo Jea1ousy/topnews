@@ -36,6 +36,8 @@ data class BackendNewsDto(
     val description: String?,
     @SerializedName("summary")
     val summary: String?,
+    @SerializedName("ai_summary")
+    val aiSummary: String?,
     @SerializedName("content")
     val content: String?,
     @SerializedName("content_html")
@@ -84,6 +86,8 @@ data class BackendPaperDto(
     val description: String?,
     @SerializedName("summary")
     val summary: String?,
+    @SerializedName("ai_summary")
+    val aiSummary: String?,
     @SerializedName("content")
     val content: String?,
     @SerializedName("source")
@@ -110,4 +114,31 @@ data class BackendPaperDto(
     val matchedKeywords: List<String>?,
     @SerializedName("score")
     val score: Int?
+)
+
+data class BackendAcademicKeywordDto(
+    @SerializedName("id")
+    val id: Int?,
+    @SerializedName("raw_rule")
+    val rawRule: String?,
+    @SerializedName("display_name")
+    val displayName: String?,
+    @SerializedName("is_required")
+    val isRequired: Boolean?,
+    @SerializedName("is_excluded")
+    val isExcluded: Boolean?,
+    @SerializedName("is_regex")
+    val isRegex: Boolean?
+)
+
+data class AddAcademicKeywordRequest(
+    @SerializedName("keyword")
+    val keyword: String
+)
+
+data class BackendAiSummaryResponse(
+    @SerializedName("summary")
+    val summary: String?,
+    @SerializedName("cached")
+    val cached: Boolean?
 )

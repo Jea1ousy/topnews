@@ -25,6 +25,10 @@ class AppConfig:
     request_timeout: float
     user_agent: str
     sources: tuple[SourceConfig, ...]
+    llm_base_url: str
+    llm_api_key: str
+    llm_model: str
+    llm_timeout: float
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "sources.example.json"
@@ -37,6 +41,11 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
     port = int(os.getenv("TOPNEWS_PORT", raw.get("port", 8080)))
     timeout = float(os.getenv("TOPNEWS_TIMEOUT", raw.get("request_timeout", 12)))
     user_agent = raw.get("user_agent", "TopNewsBot/0.1 (+https://example.local/topnews)")
+    llm_config = raw.get("llm", {})
+    llm_base_url = os.getenv("TOPNEWS_LLM_BASE_URL", llm_config.get("base_url", ""))
+    llm_api_key = os.getenv("TOPNEWS_LLM_API_KEY", llm_config.get("api_key", ""))
+    llm_model = os.getenv("TOPNEWS_LLM_MODEL", llm_config.get("model", ""))
+    llm_timeout = float(os.getenv("TOPNEWS_LLM_TIMEOUT", llm_config.get("timeout", timeout)))
     sources = tuple(
         SourceConfig(
             name=str(item["name"]),
@@ -56,6 +65,10 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         request_timeout=timeout,
         user_agent=user_agent,
         sources=sources,
+        llm_base_url=str(llm_base_url),
+        llm_api_key=str(llm_api_key),
+        llm_model=str(llm_model),
+        llm_timeout=llm_timeout,
     )
 
 

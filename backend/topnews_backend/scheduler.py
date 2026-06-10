@@ -21,8 +21,8 @@ class FetchOptions:
 
 @dataclass(frozen=True)
 class ScheduleOptions:
-    news_interval_minutes: float = 30.0
-    papers_interval_minutes: float = 180.0
+    news_interval_minutes: float = 10.0
+    papers_interval_minutes: float = 60.0
     figures_interval_minutes: float = 180.0
     run_on_start: bool = True
     idle_sleep_seconds: float = 30.0
@@ -33,6 +33,7 @@ class _ScheduledJob:
     name: str
     interval_seconds: float
     next_run: float
+    run_at_start: bool
     run: Callable[[], list[IngestResult]]
 
 
@@ -77,7 +78,7 @@ def run_scheduler(
                 {
                     "name": job.name,
                     "interval_seconds": job.interval_seconds,
-                    "run_at_start": schedule_options.run_on_start,
+                    "run_at_start": job.run_at_start,
                 }
                 for job in jobs
             ]
@@ -118,15 +119,23 @@ def _build_jobs(
     first_delay = 0.0 if schedule_options.run_on_start else None
     jobs: list[_ScheduledJob] = []
 
-    def add_job(name: str, interval_minutes: float, run: Callable[[], list[IngestResult]]) -> None:
+    def add_job(
+        name: str,
+        interval_minutes: float,
+        run: Callable[[], list[IngestResult]],
+        *,
+        run_at_start: bool | None = None,
+    ) -> None:
         if interval_minutes <= 0:
             return
         interval_seconds = interval_minutes * 60
+        starts_immediately = schedule_options.run_on_start if run_at_start is None else run_at_start
         jobs.append(
             _ScheduledJob(
                 name=name,
                 interval_seconds=interval_seconds,
-                next_run=now + (first_delay if first_delay is not None else interval_seconds),
+                next_run=now + (first_delay if starts_immediately and first_delay is not None else interval_seconds),
+                run_at_start=starts_immediately,
                 run=run,
             )
         )
@@ -139,7 +148,7 @@ def _build_jobs(
     add_job(
         "papers",
         schedule_options.papers_interval_minutes,
-        lambda: [aggregator.ingest_papers(limit=fetch_options.papers_limit, source=fetch_options.paper_source)],
+        lambda: _run_papers_with_figures(aggregator, fetch_options),
     )
     add_job(
         "figures",
@@ -151,8 +160,27 @@ def _build_jobs(
                 force=fetch_options.force_figures,
             )
         ],
+        run_at_start=schedule_options.run_on_start and schedule_options.papers_interval_minutes <= 0,
     )
     return jobs
+
+
+def _run_papers_with_figures(aggregator: NewsAggregator, fetch_options: FetchOptions) -> list[IngestResult]:
+    results = [
+        aggregator.ingest_papers(
+            limit=fetch_options.papers_limit,
+            source=fetch_options.paper_source,
+        )
+    ]
+    if fetch_options.figures_limit > 0:
+        results.append(
+            aggregator.ingest_paper_figures(
+                limit=fetch_options.figures_limit,
+                delay_seconds=fetch_options.figure_delay_seconds,
+                force=fetch_options.force_figures,
+            )
+        )
+    return results
 
 
 def _log_event(event: str, payload: dict[str, object]) -> None:

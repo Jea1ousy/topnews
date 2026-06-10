@@ -8,6 +8,7 @@ data class NewsArticle(
     val timeText: String,
     val link: String = "",
     val description: String = "",
+    val aiSummary: String? = null,
     val content: String = "",
     val html: String = "",
     val channelId: String = "",

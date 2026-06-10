@@ -5,7 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.topnews.data.repository.TopNewsBackendRepository
 import com.example.topnews.data.repository.WeatherRepository
 import com.example.topnews.domain.model.DeviceLocation
-import com.example.topnews.domain.repository.NewsRepository
+import com.example.topnews.domain.model.NewsArticle
 import java.net.UnknownHostException
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -15,9 +15,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
 
 class HomeViewModel : ViewModel() {
-    private val repository: NewsRepository = TopNewsBackendRepository()
+    private val repository = TopNewsBackendRepository()
     private val weatherRepository = WeatherRepository()
     private val pageSize = 20
 
@@ -30,6 +31,7 @@ class HomeViewModel : ViewModel() {
 
     init {
         loadFirstPage(category = DEFAULT_CATEGORY, forceRefresh = false)
+        loadAcademicKeywords()
     }
 
     fun selectCategory(category: String) {
@@ -43,6 +45,9 @@ class HomeViewModel : ViewModel() {
         }
         if (shouldLoad) {
             loadFirstPage(category = category, forceRefresh = false)
+        }
+        if (category == ACADEMIC_CATEGORY && state.academicKeywords.isEmpty() && !state.isLoadingAcademicKeywords) {
+            loadAcademicKeywords()
         }
     }
 
@@ -186,9 +191,153 @@ class HomeViewModel : ViewModel() {
         refresh()
     }
 
+    fun summarizeArticle(article: NewsArticle) {
+        val cachedSummary = article.aiSummary
+            ?: _uiState.value.aiSummaries[article.id]?.summary
+        if (!cachedSummary.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(
+                    aiSummaries = it.aiSummaries + (article.id to AiSummaryState(summary = cachedSummary))
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    aiSummaries = it.aiSummaries + (article.id to AiSummaryState(isLoading = true))
+                )
+            }
+
+            runCatching {
+                repository.summarizeArticle(article)
+            }
+                .onSuccess { summary ->
+                    _uiState.update { state ->
+                        state.copy(
+                            feedsByCategory = state.feedsByCategory.mapValues { (_, feed) ->
+                                feed.copy(
+                                    articles = feed.articles.map { item ->
+                                        if (item.id == article.id) item.copy(aiSummary = summary) else item
+                                    }
+                                )
+                            },
+                            aiSummaries = state.aiSummaries + (article.id to AiSummaryState(summary = summary))
+                        )
+                    }
+                }
+                .onFailure { throwable ->
+                    _uiState.update {
+                        it.copy(
+                            aiSummaries = it.aiSummaries + (
+                                article.id to AiSummaryState(error = throwable.toUserMessage())
+                            )
+                        )
+                    }
+                }
+        }
+    }
+
+    fun loadAcademicKeywords() {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(isLoadingAcademicKeywords = true, academicKeywordError = null)
+            }
+
+            runCatching {
+                repository.getAcademicKeywords()
+            }
+                .onSuccess { keywords ->
+                    _uiState.update {
+                        it.copy(
+                            academicKeywords = keywords,
+                            isLoadingAcademicKeywords = false,
+                            academicKeywordError = null
+                        )
+                    }
+                }
+                .onFailure { throwable ->
+                    _uiState.update {
+                        it.copy(
+                            isLoadingAcademicKeywords = false,
+                            academicKeywordError = throwable.toUserMessage()
+                        )
+                    }
+                }
+        }
+    }
+
+    fun addAcademicKeyword(rawKeyword: String) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(isLoadingAcademicKeywords = true, academicKeywordError = null)
+            }
+
+            runCatching {
+                repository.addAcademicKeyword(rawKeyword)
+            }
+                .onSuccess { keyword ->
+                    _uiState.update {
+                        it.copy(
+                            academicKeywords = (it.academicKeywords.filterNot { item -> item.id == keyword.id } + keyword)
+                                .sortedBy { item -> item.id },
+                            isLoadingAcademicKeywords = false,
+                            academicKeywordError = null
+                        )
+                    }
+                    loadFirstPage(category = ACADEMIC_CATEGORY, forceRefresh = true)
+                }
+                .onFailure { throwable ->
+                    _uiState.update {
+                        it.copy(
+                            isLoadingAcademicKeywords = false,
+                            academicKeywordError = throwable.toUserMessage()
+                        )
+                    }
+                }
+        }
+    }
+
+    fun deleteAcademicKeyword(id: Int) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(isLoadingAcademicKeywords = true, academicKeywordError = null)
+            }
+
+            runCatching {
+                repository.deleteAcademicKeyword(id)
+            }
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            academicKeywords = it.academicKeywords.filterNot { keyword -> keyword.id == id },
+                            isLoadingAcademicKeywords = false,
+                            academicKeywordError = null
+                        )
+                    }
+                    loadFirstPage(category = ACADEMIC_CATEGORY, forceRefresh = true)
+                }
+                .onFailure { throwable ->
+                    _uiState.update {
+                        it.copy(
+                            isLoadingAcademicKeywords = false,
+                            academicKeywordError = throwable.toUserMessage()
+                        )
+                    }
+                }
+        }
+    }
+
     private fun Throwable.toUserMessage(): String {
         return when (this) {
             is UnknownHostException -> "无法解析接口域名：${message.orEmpty()}"
+            is HttpException -> when (code()) {
+                503 -> "后端还没有配置大模型服务"
+                502 -> "AI总结服务暂时不可用"
+                404 -> "没有找到这篇内容"
+                else -> "接口请求失败：HTTP ${code()}"
+            }
             is IllegalArgumentException -> message ?: "接口配置不完整"
             is IllegalStateException -> message ?: "接口返回异常"
             else -> message ?: "新闻加载失败"
@@ -212,5 +361,6 @@ class HomeViewModel : ViewModel() {
 
     companion object {
         private const val DEFAULT_CATEGORY = "推荐"
+        private const val ACADEMIC_CATEGORY = "学术推荐"
     }
 }

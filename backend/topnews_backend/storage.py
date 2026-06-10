@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import json
 import sqlite3
@@ -49,6 +50,7 @@ class Article:
     image_cached: bool
     published_at: str | None
     fetched_at: str
+    ai_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class Paper:
     updated_at: str | None
     fetched_at: str
     figure_checked_at: str | None
+    ai_summary: str | None = None
     matched_keywords: list[str] | None = None
     score: int | None = None
 
@@ -143,6 +146,9 @@ class NewsStore:
             _ensure_column(connection, "articles", "image_data", "BLOB")
             _ensure_column(connection, "articles", "image_mime_type", "TEXT")
             _ensure_column(connection, "articles", "image_cached_at", "TEXT")
+            _ensure_column(connection, "articles", "ai_summary", "TEXT")
+            _ensure_column(connection, "articles", "ai_summary_at", "TEXT")
+            connection.execute("UPDATE articles SET category = '时政' WHERE category = '国内'")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles(region)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at)")
@@ -185,6 +191,8 @@ class NewsStore:
             _ensure_column(connection, "papers", "image_mime_type", "TEXT")
             _ensure_column(connection, "papers", "image_cached_at", "TEXT")
             _ensure_column(connection, "papers", "figure_checked_at", "TEXT")
+            _ensure_column(connection, "papers", "ai_summary", "TEXT")
+            _ensure_column(connection, "papers", "ai_summary_at", "TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_keywords_enabled ON academic_keywords(enabled)")
 
@@ -211,6 +219,20 @@ class NewsStore:
                         description=excluded.description,
                         content=excluded.content,
                         content_html=excluded.content_html,
+                        ai_summary=CASE
+                            WHEN excluded.title IS NOT articles.title
+                              OR excluded.description IS NOT articles.description
+                              OR excluded.content IS NOT articles.content
+                              OR excluded.content_html IS NOT articles.content_html THEN NULL
+                            ELSE articles.ai_summary
+                        END,
+                        ai_summary_at=CASE
+                            WHEN excluded.title IS NOT articles.title
+                              OR excluded.description IS NOT articles.description
+                              OR excluded.content IS NOT articles.content
+                              OR excluded.content_html IS NOT articles.content_html THEN NULL
+                            ELSE articles.ai_summary_at
+                        END,
                         image_data=CASE
                             WHEN excluded.image_url IS NOT articles.image_url THEN NULL
                             ELSE articles.image_data
@@ -269,7 +291,8 @@ class NewsStore:
                 SELECT
                     a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
                     a.description, a.content, a.content_html, a.image_url, a.image_urls,
-                    a.published_at, a.fetched_at, a.image_data IS NOT NULL AS image_cached
+                    a.published_at, a.fetched_at, a.ai_summary,
+                    a.image_data IS NOT NULL AS image_cached
                 FROM articles a
                 {where}
                 ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
@@ -301,7 +324,8 @@ class NewsStore:
                 SELECT
                     a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
                     a.description, a.content, a.content_html, a.image_url, a.image_urls,
-                    a.published_at, a.fetched_at, a.image_data IS NOT NULL AS image_cached,
+                    a.published_at, a.fetched_at, a.ai_summary,
+                    a.image_data IS NOT NULL AS image_cached,
                     CASE
                         WHEN a.image_url IS NOT NULL AND a.image_url != '' THEN 6
                         ELSE 0
@@ -315,7 +339,7 @@ class NewsStore:
                         ELSE 0
                     END
                     + CASE a.category
-                        WHEN '国内' THEN 5
+                        WHEN '时政' THEN 5
                         WHEN '国际' THEN 5
                         WHEN '科技' THEN 4
                         WHEN '财经' THEN 4
@@ -421,6 +445,35 @@ class NewsStore:
             return []
         return _article_images(row["image_url"], _json_string_list(row["image_urls"]))
 
+    def get_article(self, external_id: str) -> Article | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
+                    a.description, a.content, a.content_html, a.image_url, a.image_urls,
+                    a.published_at, a.fetched_at, a.ai_summary,
+                    a.image_data IS NOT NULL AS image_cached
+                FROM articles a
+                WHERE a.external_id = ? OR CAST(a.id AS TEXT) = ?
+                """,
+                (external_id, external_id),
+            ).fetchone()
+        return _row_to_article(row) if row else None
+
+    def update_article_ai_summary(self, external_id: str, summary: str) -> bool:
+        summarized_at = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE articles
+                SET ai_summary = ?, ai_summary_at = ?
+                WHERE external_id = ? OR CAST(id AS TEXT) = ?
+                """,
+                (summary, summarized_at, external_id, external_id),
+            )
+        return cursor.rowcount > 0
+
     def update_article_image_cache(
         self,
         external_id: str,
@@ -478,6 +531,16 @@ class NewsStore:
                         title=excluded.title,
                         authors=excluded.authors,
                         abstract=excluded.abstract,
+                        ai_summary=CASE
+                            WHEN excluded.title IS NOT papers.title
+                              OR excluded.abstract IS NOT papers.abstract THEN NULL
+                            ELSE papers.ai_summary
+                        END,
+                        ai_summary_at=CASE
+                            WHEN excluded.title IS NOT papers.title
+                              OR excluded.abstract IS NOT papers.abstract THEN NULL
+                            ELSE papers.ai_summary_at
+                        END,
                         source=excluded.source,
                         url=excluded.url,
                         pdf_url=excluded.pdf_url,
@@ -558,6 +621,31 @@ class NewsStore:
             return None
         return bytes(row["image_data"]), row["image_mime_type"] or "application/octet-stream"
 
+    def get_paper(self, external_id: str) -> Paper | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT p.*
+                FROM papers p
+                WHERE p.external_id = ? OR CAST(p.id AS TEXT) = ?
+                """,
+                (external_id, external_id),
+            ).fetchone()
+        return _row_to_paper(row) if row else None
+
+    def update_paper_ai_summary(self, external_id: str, summary: str) -> bool:
+        summarized_at = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE papers
+                SET ai_summary = ?, ai_summary_at = ?
+                WHERE external_id = ? OR CAST(id AS TEXT) = ?
+                """,
+                (summary, summarized_at, external_id, external_id),
+            )
+        return cursor.rowcount > 0
+
     def recommend_papers(
         self,
         page: int,
@@ -622,6 +710,7 @@ class NewsStore:
                     updated_at=paper.updated_at,
                     fetched_at=paper.fetched_at,
                     figure_checked_at=paper.figure_checked_at,
+                    ai_summary=paper.ai_summary,
                     matched_keywords=list(match.matched_keywords),
                     score=match.score,
                 )
@@ -670,7 +759,8 @@ class NewsStore:
                 SELECT
                     a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
                     a.description, a.content, a.content_html, a.image_url, a.image_urls,
-                    a.published_at, a.fetched_at, a.image_data IS NOT NULL AS image_cached
+                    a.published_at, a.fetched_at, a.ai_summary,
+                    a.image_data IS NOT NULL AS image_cached
                 FROM articles a
                 {where}
                 ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
@@ -720,7 +810,7 @@ def article_to_dict(article: Article) -> dict[str, object]:
     payload.pop("image_cached", None)
     payload["image_source_url"] = article.image_url
     payload["image_url"] = (
-        f"/v1/articles/{urllib.parse.quote(article.external_id, safe='')}/image"
+        f"/v1/articles/{urllib.parse.quote(article.external_id, safe='')}/image?v={_image_version(article.image_url)}"
         if article.image_url
         else None
     )
@@ -728,11 +818,16 @@ def article_to_dict(article: Article) -> dict[str, object]:
     payload["image_urls"] = _article_images(article.image_url, article.image_urls)
     payload["item_type"] = "news"
     payload["summary"] = build_summary(article.description, article.content, article.title)
+    payload["ai_summary"] = article.ai_summary
     return payload
 
 
 def keyword_to_dict(keyword: AcademicKeyword) -> dict[str, object]:
     return asdict(keyword)
+
+
+def _image_version(image_url: str | None) -> str:
+    return hashlib.sha1((image_url or "").encode("utf-8")).hexdigest()[:12]
 
 
 def paper_to_dict(paper: Paper) -> dict[str, object]:
@@ -747,6 +842,7 @@ def paper_to_dict(paper: Paper) -> dict[str, object]:
     )
     payload["item_type"] = "paper"
     payload["summary"] = build_summary(paper.abstract, paper.title)
+    payload["ai_summary"] = paper.ai_summary
     return payload
 
 
@@ -778,6 +874,7 @@ def _row_to_article(row: sqlite3.Row) -> Article:
         image_cached=bool(row["image_cached"]),
         published_at=row["published_at"],
         fetched_at=row["fetched_at"],
+        ai_summary=row["ai_summary"],
     )
 
 
@@ -813,6 +910,7 @@ def _row_to_paper(row: sqlite3.Row) -> Paper:
         updated_at=row["updated_at"],
         fetched_at=row["fetched_at"],
         figure_checked_at=row["figure_checked_at"],
+        ai_summary=row["ai_summary"],
     )
 
 

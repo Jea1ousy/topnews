@@ -43,8 +43,8 @@ def main() -> None:
 
     scheduler_parser = subparsers.add_parser("scheduler", help="Run scheduled ingest loop")
     _add_fetch_options(scheduler_parser)
-    scheduler_parser.add_argument("--news-interval-minutes", type=float, default=30.0)
-    scheduler_parser.add_argument("--papers-interval-minutes", type=float, default=180.0)
+    scheduler_parser.add_argument("--news-interval-minutes", type=float, default=10.0)
+    scheduler_parser.add_argument("--papers-interval-minutes", type=float, default=60.0)
     scheduler_parser.add_argument("--figures-interval-minutes", type=float, default=180.0)
     scheduler_parser.add_argument("--idle-sleep-seconds", type=float, default=30.0)
     scheduler_parser.add_argument("--no-run-on-start", action="store_true")
@@ -131,6 +131,10 @@ def _replace_config(config, **kwargs):
         "request_timeout": config.request_timeout,
         "user_agent": config.user_agent,
         "sources": config.sources,
+        "llm_base_url": config.llm_base_url,
+        "llm_api_key": config.llm_api_key,
+        "llm_model": config.llm_model,
+        "llm_timeout": config.llm_timeout,
     }
     values.update(kwargs)
     return type(config)(**values)

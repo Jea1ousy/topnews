@@ -3,22 +3,25 @@ package com.example.topnews.data.repository
 import android.os.Build
 import com.example.topnews.BuildConfig
 import com.example.topnews.data.remote.TopNewsBackendApi
+import com.example.topnews.data.remote.dto.AddAcademicKeywordRequest
+import com.example.topnews.data.remote.dto.BackendAcademicKeywordDto
 import com.example.topnews.data.remote.dto.BackendNewsDto
 import com.example.topnews.data.remote.dto.BackendNewsPageResponse
 import com.example.topnews.data.remote.dto.BackendPaperDto
 import com.example.topnews.data.remote.dto.BackendPaperPageResponse
+import com.example.topnews.domain.model.AcademicKeyword
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.domain.model.NewsPage
 import com.example.topnews.domain.repository.NewsRepository
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import java.time.Duration
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.net.URI
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class TopNewsBackendRepository(
@@ -28,6 +31,35 @@ class TopNewsBackendRepository(
     private val baseUrl: String = resolveBaseUrl(configuredBaseUrl, deviceBaseUrl)
     private val api: TopNewsBackendApi by lazy { createApi(baseUrl) }
 
+    suspend fun getAcademicKeywords(): List<AcademicKeyword> {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        return api.getAcademicKeywords().mapNotNull { it.toAcademicKeyword() }
+    }
+
+    suspend fun addAcademicKeyword(keyword: String): AcademicKeyword {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        val normalizedKeyword = keyword.trim()
+        require(normalizedKeyword.isNotBlank()) { "请输入关键词" }
+        return api.addAcademicKeyword(AddAcademicKeywordRequest(normalizedKeyword)).toAcademicKeyword()
+            ?: error("关键词保存失败")
+    }
+
+    suspend fun deleteAcademicKeyword(id: Int) {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        api.deleteAcademicKeyword(id)
+    }
+
+    suspend fun summarizeArticle(article: NewsArticle): String {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        val response = if (article.channelName == ACADEMIC_CATEGORY) {
+            api.summarizePaper(article.id)
+        } else {
+            api.summarizeArticle(article.id)
+        }
+        return response.summary?.takeIf { it.isNotBlank() }
+            ?: error("AI总结返回为空")
+    }
+
     override suspend fun getTopNews(
         page: Int,
         pageSize: Int,
@@ -36,9 +68,6 @@ class TopNewsBackendRepository(
         excludeIds: List<String>
     ): NewsPage {
         require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
-        if (forceRefresh && page == 1) {
-            refreshRemote(category = category, pageSize = pageSize)
-        }
         val exclude = excludeIds
             .filter { it.isNotBlank() }
             .distinct()
@@ -77,16 +106,6 @@ class TopNewsBackendRepository(
             "学术推荐" -> api.getPaperRecommendations(page = page, pageSize = pageSize, exclude = exclude).toNewsPage(page, pageSize)
             "推荐", "关注", "热榜" -> api.getRecommendations(page = page, pageSize = pageSize, exclude = exclude).toNewsPage(page, pageSize)
             else -> api.getNews(page = page, pageSize = pageSize, category = category, exclude = exclude).toNewsPage(page, pageSize)
-        }
-    }
-
-    private suspend fun refreshRemote(category: String, pageSize: Int) {
-        runCatching {
-            when (category) {
-                "AI前沿" -> api.ingestNews(limitPerSource = pageSize)
-                "学术推荐" -> api.ingestPapers(limit = pageSize, source = "rss")
-                else -> api.ingestNews(limitPerSource = pageSize)
-            }
         }
     }
 
@@ -136,6 +155,7 @@ class TopNewsBackendRepository(
             timeText = formatRelativeTime(publishedAt ?: fetchedAt),
             link = url.orEmpty(),
             description = summary?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
+            aiSummary = aiSummary?.takeIf { it.isNotBlank() },
             content = content?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
             html = htmlWithCachedPrimaryImage?.takeIf { it.isNotBlank() } ?: contentHtml.orEmpty(),
             channelName = category.orEmpty(),
@@ -167,6 +187,7 @@ class TopNewsBackendRepository(
             description = summary?.takeIf { it.isNotBlank() }
                 ?: abstractText?.takeIf { it.isNotBlank() }
                 ?: description.orEmpty(),
+            aiSummary = aiSummary?.takeIf { it.isNotBlank() },
             content = listOf(
                 authorText,
                 imageCaption?.takeIf { it.isNotBlank() }?.let { "图注：$it" },
@@ -180,6 +201,20 @@ class TopNewsBackendRepository(
             channelName = if (itemType == "news") "AI前沿" else "学术推荐",
             imageUrl = resolveBackendUrl(imageUrl),
             imageUrls = resolveBackendUrls(emptyList(), imageUrl)
+        )
+    }
+
+    private fun BackendAcademicKeywordDto.toAcademicKeyword(): AcademicKeyword? {
+        val safeId = id ?: return null
+        val safeRule = rawRule?.trim().orEmpty()
+        if (safeRule.isEmpty()) return null
+        return AcademicKeyword(
+            id = safeId,
+            rawRule = safeRule,
+            displayName = displayName?.takeIf { it.isNotBlank() } ?: safeRule,
+            isRequired = isRequired == true,
+            isExcluded = isExcluded == true,
+            isRegex = isRegex == true
         )
     }
 
@@ -205,6 +240,7 @@ class TopNewsBackendRepository(
 
     companion object {
         private const val MAX_REFRESH_EXCLUDE_IDS = 300
+        private const val ACADEMIC_CATEGORY = "学术推荐"
         private const val EMULATOR_HOST_ALIAS = "10.0.2.2"
         private const val DEFAULT_LOCAL_BACKEND_BASE_URL = "http://10.0.2.2:8080/"
 
@@ -256,8 +292,8 @@ class TopNewsBackendRepository(
         private fun createApi(baseUrl: String): TopNewsBackendApi {
             val client = OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .writeTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
                 .build()
 
             return Retrofit.Builder()
@@ -274,34 +310,47 @@ class TopNewsBackendRepository(
         }
 
         private fun formatRelativeTime(rawTime: String?): String {
-            val instant = rawTime?.toInstantOrNull() ?: return "刚刚"
-            val now = Instant.now()
-            val duration = Duration.between(instant, now)
-            if (duration.isNegative) return "刚刚"
+            val date = rawTime?.toDateOrNull() ?: return "刚刚"
+            val durationMillis = System.currentTimeMillis() - date.time
+            if (durationMillis < 0) return "刚刚"
 
-            val minutes = duration.toMinutes()
-            val hours = duration.toHours()
-            val days = duration.toDays()
+            val minutes = TimeUnit.MILLISECONDS.toMinutes(durationMillis)
+            val hours = TimeUnit.MILLISECONDS.toHours(durationMillis)
+            val days = TimeUnit.MILLISECONDS.toDays(durationMillis)
             return when {
                 minutes < 1 -> "刚刚"
                 minutes < 60 -> "${minutes}分钟前"
                 hours < 24 -> "${hours}小时前"
                 days == 1L -> "昨天"
                 days < 7 -> "${days}天前"
-                else -> instant
-                    .atZone(ZoneId.systemDefault())
-                    .toLocalDate()
-                    .formatForNews()
+                else -> date.formatForNews()
             }
         }
 
-        private fun String.toInstantOrNull(): Instant? {
-            return runCatching { Instant.parse(this) }.getOrNull()
+        private fun String.toDateOrNull(): Date? {
+            val value = trim()
+            if (value.isEmpty()) return null
+            return ISO_DATE_PATTERNS.firstNotNullOfOrNull { pattern ->
+                runCatching {
+                    SimpleDateFormat(pattern, Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("UTC")
+                    }.parse(value)
+                }.getOrNull()
+            }
         }
 
-        private fun LocalDate.formatForNews(): String {
-            val pattern = if (year == LocalDate.now().year) "MM-dd" else "yyyy-MM-dd"
-            return format(DateTimeFormatter.ofPattern(pattern))
+        private fun Date.formatForNews(): String {
+            val currentYear = Calendar.getInstance().get(Calendar.YEAR)
+            val itemYear = Calendar.getInstance().apply { time = this@formatForNews }.get(Calendar.YEAR)
+            val pattern = if (itemYear == currentYear) "MM-dd" else "yyyy-MM-dd"
+            return SimpleDateFormat(pattern, Locale.getDefault()).format(this)
         }
+
+        private val ISO_DATE_PATTERNS = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd HH:mm:ss"
+        )
     }
 }

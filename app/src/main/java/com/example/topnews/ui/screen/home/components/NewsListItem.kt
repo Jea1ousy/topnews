@@ -60,9 +60,10 @@ fun NewsListItem(
                 ArticleMeta(article = article)
             }
 
-            if (article.imageUrl != null) {
+            val thumbnailUrl = article.imageUrl?.takeUnless(::isJunkArticleImageUrl)
+            if (thumbnailUrl != null) {
                 Spacer(modifier = Modifier.width(14.dp))
-                NewsThumbnail(article = article)
+                NewsThumbnail(article = article, imageUrl = thumbnailUrl)
             }
         }
         HorizontalDivider(
@@ -85,9 +86,12 @@ private fun ArticleMeta(article: NewsArticle) {
             )
             Spacer(modifier = Modifier.width(5.dp))
         }
+        SourceAvatar(source = article.source, size = 18.dp)
+        Spacer(modifier = Modifier.width(5.dp))
         val commentText = if (article.commentCount > 0) "${article.commentCount}评论  " else ""
+        val sourceText = compactSourceName(article.source)
         Text(
-            text = "${article.source}  $commentText${article.timeText}",
+            text = "$sourceText  $commentText${article.timeText}",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
             maxLines = 1,
@@ -97,7 +101,7 @@ private fun ArticleMeta(article: NewsArticle) {
 }
 
 @Composable
-private fun NewsThumbnail(article: NewsArticle) {
+private fun NewsThumbnail(article: NewsArticle, imageUrl: String) {
     Box(
         modifier = Modifier
             .size(width = 112.dp, height = 76.dp)
@@ -105,7 +109,7 @@ private fun NewsThumbnail(article: NewsArticle) {
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         AsyncImage(
-            model = article.imageUrl,
+            model = imageUrl,
             contentDescription = article.title,
             modifier = Modifier
                 .fillMaxSize(),
@@ -139,3 +143,31 @@ private fun NewsThumbnail(article: NewsArticle) {
         }
     }
 }
+
+private fun isJunkArticleImageUrl(url: String): Boolean {
+    val lowered = url.lowercase()
+    return JUNK_IMAGE_URL_TOKENS.any { it in lowered }
+}
+
+private val JUNK_IMAGE_URL_TOKENS = listOf(
+    "avatar",
+    "author",
+    "head",
+    "portrait",
+    "profile",
+    "touxiang",
+    "qrcode",
+    "qr-code",
+    "qr_",
+    "_qr",
+    "ewm",
+    "weixin",
+    "wechat",
+    "wxcode",
+    "appcode",
+    "placeholder",
+    "default",
+    "blank",
+    "empty",
+    "noimage"
+)

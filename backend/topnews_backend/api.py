@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import AppConfig
 from .fetchers import FetchError
+from .llm import LlmClient, LlmConfigError, LlmRequestError
 from .paper_figures import fetch_remote_image
 from .service import NewsAggregator
 from .storage import NewsStore, Page, article_to_dict, keyword_to_dict, paper_to_dict
@@ -109,6 +110,9 @@ class TopNewsApi:
             if method == "GET" and parsed.path == "/v1/recommendations":
                 page = self.store.recommend(**self._page_args(params))
                 return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
+            if method == "POST" and parsed.path.startswith("/v1/articles/") and parsed.path.endswith("/ai-summary"):
+                external_id = urllib.parse.unquote(parsed.path[len("/v1/articles/") : -len("/ai-summary")].rstrip("/"))
+                return self._write_article_ai_summary(request, external_id, force=self._force_summary(params, body))
             if method == "GET" and parsed.path == "/v1/ai-frontier":
                 page = self.store.ai_frontier(
                     page=int(self._first(params, "page", "1") or 1),
@@ -116,6 +120,9 @@ class TopNewsApi:
                     excluded_ids=self._csv(params, "exclude"),
                 )
                 return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
+            if method == "POST" and parsed.path.startswith("/v1/papers/") and parsed.path.endswith("/ai-summary"):
+                external_id = urllib.parse.unquote(parsed.path[len("/v1/papers/") : -len("/ai-summary")].rstrip("/"))
+                return self._write_paper_ai_summary(request, external_id, force=self._force_summary(params, body))
             if method == "GET" and parsed.path == "/v1/academic/keywords":
                 include_disabled = self._first(params, "includeDisabled") == "true"
                 keywords = self.store.list_academic_keywords(include_disabled=include_disabled)
@@ -160,9 +167,14 @@ class TopNewsApi:
                 page = self.store.recommend(**self._compat_page_args(params, body))
                 return self.write_json(request, HTTPStatus.OK, self._compat_news_page(page))
             return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "not_found", "path": parsed.path})
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):  # pragma: no cover - client disconnected
+            return
         except Exception as exc:  # pragma: no cover - API safety net
             traceback.print_exc()
-            self.write_json(request, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error", "message": str(exc)})
+            try:
+                self.write_json(request, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error", "message": str(exc)})
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
 
     def write_json(self, request: BaseHTTPRequestHandler, status: HTTPStatus, payload: Any) -> None:
         request.send_response(status.value)
@@ -203,6 +215,64 @@ class TopNewsApi:
             return json.loads(raw or "{}")
         return {key: values[-1] for key, values in urllib.parse.parse_qs(raw).items()}
 
+    def _write_article_ai_summary(self, request: BaseHTTPRequestHandler, external_id: str, force: bool) -> None:
+        article = self.store.get_article(external_id)
+        if not article:
+            return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "article_not_found"})
+        if article.ai_summary and not force:
+            return self.write_json(request, HTTPStatus.OK, {"summary": article.ai_summary, "cached": True})
+
+        body = "\n\n".join(
+            value
+            for value in (article.description, article.content, article.content_html)
+            if value and value.strip()
+        )
+        if not body.strip():
+            body = article.title
+        try:
+            summary = self._llm_client().summarize(article.title, body, source=article.source)
+        except LlmConfigError as exc:
+            return self.write_json(request, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "llm_not_configured", "message": str(exc)})
+        except LlmRequestError as exc:
+            return self.write_json(request, HTTPStatus.BAD_GATEWAY, {"error": "llm_request_failed", "message": str(exc)})
+
+        self.store.update_article_ai_summary(article.external_id, summary)
+        return self.write_json(request, HTTPStatus.OK, {"summary": summary, "cached": False})
+
+    def _write_paper_ai_summary(self, request: BaseHTTPRequestHandler, external_id: str, force: bool) -> None:
+        paper = self.store.get_paper(external_id)
+        if not paper:
+            return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "paper_not_found"})
+        if paper.ai_summary and not force:
+            return self.write_json(request, HTTPStatus.OK, {"summary": paper.ai_summary, "cached": True})
+
+        body = "\n\n".join(
+            value
+            for value in (
+                "Authors: " + ", ".join(paper.authors) if paper.authors else "",
+                paper.image_caption or "",
+                paper.abstract,
+            )
+            if value and value.strip()
+        )
+        try:
+            summary = self._llm_client().summarize(paper.title, body, source=paper.source)
+        except LlmConfigError as exc:
+            return self.write_json(request, HTTPStatus.SERVICE_UNAVAILABLE, {"error": "llm_not_configured", "message": str(exc)})
+        except LlmRequestError as exc:
+            return self.write_json(request, HTTPStatus.BAD_GATEWAY, {"error": "llm_request_failed", "message": str(exc)})
+
+        self.store.update_paper_ai_summary(paper.external_id, summary)
+        return self.write_json(request, HTTPStatus.OK, {"summary": summary, "cached": False})
+
+    def _llm_client(self) -> LlmClient:
+        return LlmClient(
+            base_url=self.config.llm_base_url,
+            api_key=self.config.llm_api_key,
+            model=self.config.llm_model,
+            timeout=self.config.llm_timeout,
+        )
+
     def _page_args(self, params: dict[str, list[str]]) -> dict[str, Any]:
         return {
             "page": int(self._first(params, "page", "1") or 1),
@@ -213,6 +283,10 @@ class TopNewsApi:
             "source": self._first(params, "source"),
             "excluded_ids": self._csv(params, "exclude"),
         }
+
+    def _force_summary(self, params: dict[str, list[str]], body: dict[str, Any]) -> bool:
+        raw = body.get("force", self._first(params, "force", "false"))
+        return str(raw).lower() == "true"
 
     def _compat_page_args(self, params: dict[str, list[str]], body: dict[str, Any]) -> dict[str, Any]:
         channel_name = body.get("channelName") or self._first(params, "channelName")
@@ -252,7 +326,7 @@ class TopNewsApi:
 
     @staticmethod
     def _compat_channels() -> dict[str, Any]:
-        channels = ["推荐", "国内", "国际", "科技", "财经", "体育", "娱乐", "综合"]
+        channels = ["推荐", "时政", "财经", "综合"]
         return {
             "code": 200,
             "msg": "ok",

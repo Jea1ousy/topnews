@@ -12,7 +12,7 @@ class Classification:
 
 
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "国内": (
+    "时政": (
         "中国",
         "国务院",
         "北京",
@@ -136,7 +136,7 @@ def classify(title: str, description: str = "", source_name: str = "") -> Classi
     topical_scores = {
         category: score
         for category, score in category_scores.items()
-        if category not in {"国内", "国际"}
+        if category not in {"时政", "国际"}
     }
     topical_category, topical_score = max(topical_scores.items(), key=lambda item: item[1])
     broad_category, broad_score = max(category_scores.items(), key=lambda item: item[1])

@@ -1,5 +1,6 @@
 package com.example.topnews.ui.screen.home
 
+import com.example.topnews.domain.model.AcademicKeyword
 import com.example.topnews.domain.model.NewsArticle
 
 
@@ -7,10 +8,13 @@ data class HomeUiState(
     val temperature: String = "14°",
     val city: String = "北京",
     val weather: String = "多云",
-    val searchText: String = "AI前沿 | 学术推荐 | 新闻聚合",
     val selectedCategory: String = "推荐",
-    val categories: List<String> = listOf("推荐", "AI前沿", "学术推荐", "国内", "国际", "科技", "财经", "体育", "娱乐"),
-    val feedsByCategory: Map<String, CategoryFeedState> = emptyMap()
+    val categories: List<String> = listOf("推荐", "AI前沿", "学术推荐", "时政", "财经"),
+    val feedsByCategory: Map<String, CategoryFeedState> = emptyMap(),
+    val aiSummaries: Map<String, AiSummaryState> = emptyMap(),
+    val academicKeywords: List<AcademicKeyword> = emptyList(),
+    val isLoadingAcademicKeywords: Boolean = false,
+    val academicKeywordError: String? = null
 ) {
     val selectedFeed: CategoryFeedState
         get() = feedFor(selectedCategory)
@@ -49,4 +53,10 @@ data class CategoryFeedState(
     val currentPage: Int = 1,
     val lastUpdatedText: String = "",
     val seenArticleIds: Set<String> = emptySet()
+)
+
+data class AiSummaryState(
+    val summary: String? = null,
+    val isLoading: Boolean = false,
+    val error: String? = null
 )
