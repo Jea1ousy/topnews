@@ -494,6 +494,49 @@ class BackendTest(unittest.TestCase):
         self.assertEqual([job.interval_seconds for job in jobs], [600, 3600])
         self.assertEqual([job.next_run for job in jobs], [700.0, 3700.0])
 
+    def test_scheduler_papers_job_fetches_figures_after_papers(self):
+        aggregator = FakeAggregator()
+        jobs = _build_jobs(
+            aggregator,
+            FetchOptions(
+                papers_limit=11,
+                paper_source="rss",
+                figures_limit=13,
+                figure_delay_seconds=2.5,
+                force_figures=True,
+            ),
+            ScheduleOptions(
+                news_interval_minutes=0,
+                papers_interval_minutes=180,
+                figures_interval_minutes=0,
+                run_on_start=True,
+            ),
+            now=100.0,
+        )
+
+        self.assertEqual([job.name for job in jobs], ["papers"])
+        results = jobs[0].run()
+
+        self.assertEqual(aggregator.calls, [("papers", 11, "rss"), ("figures", 13, 2.5, True)])
+        self.assertEqual([result.source for result in results], ["papers", "figures"])
+
+    def test_scheduler_delays_independent_figures_fallback_when_papers_run_at_start(self):
+        jobs = _build_jobs(
+            FakeAggregator(),
+            FetchOptions(papers_limit=11, figures_limit=13),
+            ScheduleOptions(
+                news_interval_minutes=0,
+                papers_interval_minutes=60,
+                figures_interval_minutes=180,
+                run_on_start=True,
+            ),
+            now=100.0,
+        )
+
+        self.assertEqual([job.name for job in jobs], ["papers", "figures"])
+        self.assertEqual([job.run_at_start for job in jobs], [True, False])
+        self.assertEqual([job.next_run for job in jobs], [100.0, 10900.0])
+
 
 class FakeAggregator:
     def __init__(self):

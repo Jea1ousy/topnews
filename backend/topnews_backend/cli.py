@@ -43,8 +43,8 @@ def main() -> None:
 
     scheduler_parser = subparsers.add_parser("scheduler", help="Run scheduled ingest loop")
     _add_fetch_options(scheduler_parser)
-    scheduler_parser.add_argument("--news-interval-minutes", type=float, default=30.0)
-    scheduler_parser.add_argument("--papers-interval-minutes", type=float, default=180.0)
+    scheduler_parser.add_argument("--news-interval-minutes", type=float, default=10.0)
+    scheduler_parser.add_argument("--papers-interval-minutes", type=float, default=60.0)
     scheduler_parser.add_argument("--figures-interval-minutes", type=float, default=180.0)
     scheduler_parser.add_argument("--idle-sleep-seconds", type=float, default=30.0)
     scheduler_parser.add_argument("--no-run-on-start", action="store_true")
