@@ -19,13 +19,13 @@ class _TextExtractor(HTMLParser):
 
 def build_summary(*values: str | None, max_length: int = DEFAULT_SUMMARY_LENGTH) -> str:
     for value in values:
-        text = _plain_text(value)
+        text = plain_text(value)
         if text:
             return _truncate(text, max_length)
     return ""
 
 
-def _plain_text(value: str | None) -> str:
+def plain_text(value: str | None) -> str:
     if not value:
         return ""
     parser = _TextExtractor()

@@ -1,11 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.topnews_backend.academic import build_arxiv_rss_url, parse_arxiv_feed, parse_arxiv_rss, parse_keyword_rule
 from backend.topnews_backend.classifier import classify
-from backend.topnews_backend.config import SourceConfig
-from backend.topnews_backend.fetchers import parse_portal, parse_rss
+from backend.topnews_backend.config import SourceConfig, load_config
+from backend.topnews_backend.fetchers import parse_cls_telegraph, parse_eastmoney_kuaixun, parse_portal, parse_rss, parse_ths_kuaixun
 from backend.topnews_backend.paper_figures import build_arxiv_html_url, parse_arxiv_primary_figure
 from backend.topnews_backend.scheduler import FetchOptions, ScheduleOptions, _build_jobs, run_fetch_once
 from backend.topnews_backend.service import IngestResult
@@ -85,6 +86,64 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(articles[0].url, "https://example.com/a")
         self.assertEqual(articles[0].image_url, "https://example.com/a.jpg")
 
+    def test_parse_zaobao_portal_filters_non_article_links(self):
+        source = SourceConfig(
+            name="联合早报中国即时",
+            url="https://www.zaobao.com.sg/realtime/china",
+            kind="portal",
+            region="境外",
+            category="国内",
+        )
+        body = """
+        <html><head><meta name="description" content="联合早报页面摘要"></head><body>
+          <a href="/">Zaobao</a>
+          <a href="/zshop">ZShop 集品店</a>
+          <a href="/about">新报业媒体网站</a>
+          <a href="tel:1800-7416388">1800-7416388</a>
+          <a href="/realtime/china/story20260610-1234567">
+            中国新闻标题足够长可以入库
+            <img src="/article.jpg" alt="中国新闻标题足够长可以入库" />
+          </a>
+        </body></html>
+        """.encode()
+
+        articles = parse_portal(body, source)
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].title, "中国新闻标题足够长可以入库")
+        self.assertEqual(articles[0].url, "https://www.zaobao.com.sg/realtime/china/story20260610-1234567")
+
+    def test_parse_finance_api_sources(self):
+        cls_source = SourceConfig(name="财联社电报", url="https://www.cls.cn/nodeapi/telegraphList", kind="cls_telegraph", category="财经")
+        cls_articles = parse_cls_telegraph(
+            '{"data":{"roll_data":[{"id":123,"brief":"财联社快讯标题","content":"财联社快讯正文","ctime":1781002800}]}}'.encode(),
+            cls_source,
+        )
+        self.assertEqual(cls_articles[0].title, "财联社快讯标题")
+        self.assertEqual(cls_articles[0].url, "https://www.cls.cn/telegraph/123")
+        self.assertEqual(cls_articles[0].category, "财经")
+
+        eastmoney_source = SourceConfig(
+            name="东方财富快讯",
+            url="https://newsapi.eastmoney.com/kuaixun/v1/getlist.html",
+            kind="eastmoney_kuaixun",
+            category="财经",
+        )
+        eastmoney_articles = parse_eastmoney_kuaixun(
+            'var ajaxResult={"LivesList":[{"newsid":"202606091234567890","title":"东方财富快讯标题","digest":"东方财富摘要","showtime":"2026-06-09 18:00:00"}]};'.encode(),
+            eastmoney_source,
+        )
+        self.assertEqual(eastmoney_articles[0].url, "https://kuaixun.eastmoney.com/a/202606091234567890")
+        self.assertEqual(eastmoney_articles[0].description, "东方财富摘要")
+
+        ths_source = SourceConfig(name="同花顺快讯", url="https://news.10jqka.com.cn/tapp/news/push/stock/", kind="ths_kuaixun", category="财经")
+        ths_articles = parse_ths_kuaixun(
+            '{"data":{"list":[{"seq":"20260609123456","title":"同花顺快讯标题","digest":"同花顺摘要","ctime":1781002800}]}}'.encode(),
+            ths_source,
+        )
+        self.assertEqual(ths_articles[0].url, "https://news.10jqka.com.cn/20260609123456")
+        self.assertEqual(ths_articles[0].content, "同花顺摘要")
+
     def test_store_recommend(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = NewsStore(Path(temp_dir) / "topnews.db")
@@ -117,6 +176,42 @@ class BackendTest(unittest.TestCase):
             )
             self.assertEqual(refresh_page.total_count, 1)
             self.assertNotEqual(refresh_page.items[0].external_id, page.items[0].external_id)
+
+    def test_article_ai_summary_is_cached_and_reset_on_content_change(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = NewsStore(Path(temp_dir) / "topnews.db")
+            source = SourceConfig(name="测试RSS", url="https://example.com/rss", kind="rss")
+            articles = parse_rss(
+                """
+                <rss><channel><item>
+                    <title>AI模型发布</title>
+                    <link>https://example.com/ai</link>
+                    <description>第一版摘要。</description>
+                </item></channel></rss>
+                """.encode(),
+                source,
+            )
+            store.upsert_articles(articles)
+            external_id = articles[0].external_id
+            self.assertTrue(store.update_article_ai_summary(external_id, "AI 总结内容"))
+
+            stored = store.get_article(external_id)
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored.ai_summary, "AI 总结内容")
+            self.assertEqual(article_to_dict(stored)["ai_summary"], "AI 总结内容")
+
+            updated_articles = parse_rss(
+                """
+                <rss><channel><item>
+                    <title>AI模型发布</title>
+                    <link>https://example.com/ai</link>
+                    <description>第二版摘要。</description>
+                </item></channel></rss>
+                """.encode(),
+                source,
+            )
+            store.upsert_articles(updated_articles)
+            self.assertIsNone(store.get_article(external_id).ai_summary)
 
     def test_keyword_rule(self):
         rule = parse_keyword_rule("+retrieval => RAG")
@@ -223,6 +318,48 @@ class BackendTest(unittest.TestCase):
             )
             self.assertEqual(refresh_page.total_count, 0)
 
+    def test_paper_ai_summary_is_cached_and_reset_on_abstract_change(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = NewsStore(Path(temp_dir) / "topnews.db")
+            papers = parse_arxiv_feed(
+                """
+                <feed xmlns="http://www.w3.org/2005/Atom">
+                  <entry>
+                    <id>http://arxiv.org/abs/2605.00005v1</id>
+                    <updated>2026-05-28T10:00:00Z</updated>
+                    <published>2026-05-27T10:00:00Z</published>
+                    <title>Agent Summaries</title>
+                    <summary>First abstract.</summary>
+                    <author><name>Alice</name></author>
+                    <category term="cs.AI" />
+                  </entry>
+                </feed>
+                """.encode()
+            )
+            store.upsert_papers(papers)
+            external_id = papers[0].external_id
+            self.assertTrue(store.update_paper_ai_summary(external_id, "Paper AI summary"))
+            self.assertEqual(store.get_paper(external_id).ai_summary, "Paper AI summary")
+            self.assertEqual(paper_to_dict(store.get_paper(external_id))["ai_summary"], "Paper AI summary")
+
+            updated_papers = parse_arxiv_feed(
+                """
+                <feed xmlns="http://www.w3.org/2005/Atom">
+                  <entry>
+                    <id>http://arxiv.org/abs/2605.00005v1</id>
+                    <updated>2026-05-29T10:00:00Z</updated>
+                    <published>2026-05-27T10:00:00Z</published>
+                    <title>Agent Summaries</title>
+                    <summary>Second abstract.</summary>
+                    <author><name>Alice</name></author>
+                    <category term="cs.AI" />
+                  </entry>
+                </feed>
+                """.encode()
+            )
+            store.upsert_papers(updated_papers)
+            self.assertIsNone(store.get_paper(external_id).ai_summary)
+
     def test_existing_remote_paper_image_is_pending_until_cached(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = NewsStore(Path(temp_dir) / "topnews.db")
@@ -292,6 +429,23 @@ class BackendTest(unittest.TestCase):
     def test_build_summary_strips_html_and_truncates(self):
         summary = build_summary("<p>这是第一句完整摘要。</p><p>" + "很长的内容" * 100 + "</p>", max_length=20)
         self.assertEqual(summary, "这是第一句完整摘要。")
+
+    def test_load_config_reads_llm_environment(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "TOPNEWS_LLM_BASE_URL": "https://llm.example.com/v1",
+                "TOPNEWS_LLM_API_KEY": "test-key",
+                "TOPNEWS_LLM_MODEL": "test-model",
+                "TOPNEWS_LLM_TIMEOUT": "5",
+            },
+            clear=False,
+        ):
+            config = load_config()
+        self.assertEqual(config.llm_base_url, "https://llm.example.com/v1")
+        self.assertEqual(config.llm_api_key, "test-key")
+        self.assertEqual(config.llm_model, "test-model")
+        self.assertEqual(config.llm_timeout, 5)
 
     def test_parse_arxiv_primary_figure(self):
         body = """

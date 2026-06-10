@@ -131,6 +131,10 @@ def _replace_config(config, **kwargs):
         "request_timeout": config.request_timeout,
         "user_agent": config.user_agent,
         "sources": config.sources,
+        "llm_base_url": config.llm_base_url,
+        "llm_api_key": config.llm_api_key,
+        "llm_model": config.llm_model,
+        "llm_timeout": config.llm_timeout,
     }
     values.update(kwargs)
     return type(config)(**values)
