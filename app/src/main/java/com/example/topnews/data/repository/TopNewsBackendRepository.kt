@@ -68,9 +68,6 @@ class TopNewsBackendRepository(
         excludeIds: List<String>
     ): NewsPage {
         require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
-        if (forceRefresh && page == 1) {
-            refreshRemote(category = category, pageSize = pageSize)
-        }
         val exclude = excludeIds
             .filter { it.isNotBlank() }
             .distinct()
@@ -109,16 +106,6 @@ class TopNewsBackendRepository(
             "学术推荐" -> api.getPaperRecommendations(page = page, pageSize = pageSize, exclude = exclude).toNewsPage(page, pageSize)
             "推荐", "关注", "热榜" -> api.getRecommendations(page = page, pageSize = pageSize, exclude = exclude).toNewsPage(page, pageSize)
             else -> api.getNews(page = page, pageSize = pageSize, category = category, exclude = exclude).toNewsPage(page, pageSize)
-        }
-    }
-
-    private suspend fun refreshRemote(category: String, pageSize: Int) {
-        runCatching {
-            when (category) {
-                "AI前沿" -> api.ingestNews(limitPerSource = pageSize)
-                "学术推荐" -> api.ingestPapers(limit = pageSize, source = "rss")
-                else -> api.ingestNews(limitPerSource = pageSize)
-            }
         }
     }
 

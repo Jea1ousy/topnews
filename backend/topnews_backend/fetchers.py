@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -44,11 +44,20 @@ class PortalLink:
     image_url: str | None = None
 
 
+@dataclass(frozen=True)
+class ArticleDetail:
+    description: str = ""
+    content: str = ""
+    content_html: str = ""
+    image_urls: tuple[str, ...] = ()
+
+
 def fetch_source(source: SourceConfig, timeout: float, user_agent: str, limit: int = 30) -> list[RawArticle]:
     url = _cls_telegraph_url(source.url, limit) if source.kind == "cls_telegraph" else source.url
     body = _download(url, timeout, user_agent)
     if source.kind == "rss":
-        return parse_rss(body, source, limit=limit)
+        articles = parse_rss(body, source, limit=limit)
+        return _enrich_short_articles_from_pages(articles, source, timeout, user_agent)
     if source.kind == "portal":
         return parse_portal(body, source, limit=limit)
     if source.kind == "cls_telegraph":
@@ -112,6 +121,66 @@ def parse_portal(body: bytes, source: SourceConfig, limit: int = 30) -> list[Raw
             break
 
     return articles
+
+
+def parse_article_detail(body: bytes, base_url: str) -> ArticleDetail:
+    parser = ArticleDetailParser(base_url)
+    parser.feed(body.decode("utf-8", errors="ignore"))
+    content = _clean_text("\n\n".join(parser.text_blocks))
+    content_html = "\n".join(parser.html_blocks).strip()
+    return ArticleDetail(
+        description=parser.description,
+        content=content,
+        content_html=content_html,
+        image_urls=_dedupe_images(parser.image_urls),
+    )
+
+
+def _enrich_short_articles_from_pages(
+    articles: list[RawArticle],
+    source: SourceConfig,
+    timeout: float,
+    user_agent: str,
+) -> list[RawArticle]:
+    enriched: list[RawArticle] = []
+    details_fetched = 0
+    for article in articles:
+        if _should_fetch_article_detail(article) and details_fetched < MAX_DETAIL_PAGES_PER_SOURCE:
+            details_fetched += 1
+            try:
+                detail = parse_article_detail(_download(article.url, timeout, user_agent), article.url)
+                article = _merge_article_detail(article, detail, source)
+            except FetchError:
+                pass
+        enriched.append(article)
+    return enriched
+
+
+def _should_fetch_article_detail(article: RawArticle) -> bool:
+    if not article.url.startswith(("http://", "https://")):
+        return False
+    content_length = len(_clean_inline_text(article.content or article.description))
+    return content_length < MIN_DETAIL_CONTENT_CHARS or not article.content_html
+
+
+def _merge_article_detail(article: RawArticle, detail: ArticleDetail, source: SourceConfig) -> RawArticle:
+    content = detail.content if len(detail.content) > len(article.content) else article.content
+    description = article.description or detail.description
+    if detail.description and len(article.description) < 20:
+        description = detail.description
+    content_html = detail.content_html if detail.content_html and len(detail.content) >= len(article.content) else article.content_html
+    image_urls = _dedupe_images([*article.image_urls, *detail.image_urls])
+    classification = classify(article.title, description or content, source.name)
+    return replace(
+        article,
+        description=_clean_text(description),
+        content=_clean_text(content),
+        content_html=content_html.strip(),
+        image_url=image_urls[0] if image_urls else article.image_url,
+        image_urls=image_urls,
+        category=source.category or classification.category,
+        region=source.region or classification.region,
+    )
 
 
 def parse_cls_telegraph(body: bytes, source: SourceConfig, limit: int = 30) -> list[RawArticle]:
@@ -254,6 +323,72 @@ class PortalParser(HTMLParser):
             if image_text and (image_text in normalized_title or normalized_title in image_text):
                 return image_url
         return None
+
+
+class ArticleDetailParser(HTMLParser):
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.description = ""
+        self.text_blocks: list[str] = []
+        self.html_blocks: list[str] = []
+        self.image_urls: list[str] = []
+        self._ignore_depth = 0
+        self._capture_tag: str | None = None
+        self._capture_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lower_tag = tag.lower()
+        attr_map = {name.lower(): value or "" for name, value in attrs}
+        if lower_tag in ARTICLE_DETAIL_IGNORED_TAGS:
+            self._ignore_depth += 1
+            return
+        if self._ignore_depth:
+            return
+        if lower_tag == "meta":
+            name = (attr_map.get("name") or attr_map.get("property") or "").lower()
+            content = attr_map.get("content", "")
+            if name in {"description", "og:description"} and content and not self.description:
+                self.description = _clean_text(content)
+            if name in {"og:image", "twitter:image"} and content:
+                self._add_image(content)
+            return
+        if lower_tag == "img":
+            image_url = _image_from_attrs(attr_map, self.base_url)
+            if image_url:
+                self._add_image(image_url)
+                if self._capture_tag:
+                    self.html_blocks.append(f'<img src="{html.escape(image_url, quote=True)}" />')
+            return
+        if lower_tag in ARTICLE_DETAIL_TEXT_TAGS and not self._capture_tag:
+            self._capture_tag = lower_tag
+            self._capture_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._ignore_depth or not self._capture_tag:
+            return
+        self._capture_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        lower_tag = tag.lower()
+        if lower_tag in ARTICLE_DETAIL_IGNORED_TAGS and self._ignore_depth:
+            self._ignore_depth -= 1
+            return
+        if self._ignore_depth:
+            return
+        if self._capture_tag == lower_tag:
+            text = _clean_inline_text("".join(self._capture_text))
+            if _is_article_text_block(text, lower_tag):
+                self.text_blocks.append(text)
+                html_tag = "p" if lower_tag in {"p", "li"} else lower_tag
+                self.html_blocks.append(f"<{html_tag}>{html.escape(text)}</{html_tag}>")
+            self._capture_tag = None
+            self._capture_text = []
+
+    def _add_image(self, url: str) -> None:
+        image_url = _absolute_image_url(url, self.base_url)
+        if image_url and image_url not in self.image_urls and not _looks_decorative_image(image_url):
+            self.image_urls.append(image_url)
 
 
 def _download(url: str, timeout: float, user_agent: str) -> bytes:
@@ -400,6 +535,22 @@ def _dedupe_images(values: list[str]) -> tuple[str, ...]:
     return tuple(images)
 
 
+def _is_article_text_block(text: str, tag: str) -> bool:
+    if not text:
+        return False
+    if tag in {"h1", "h2", "h3", "h4", "blockquote"}:
+        return len(text) >= 4
+    if len(text) < 12:
+        return False
+    lowered = text.lower()
+    return not any(token in lowered for token in ARTICLE_DETAIL_JUNK_TEXT)
+
+
+def _looks_decorative_image(url: str) -> bool:
+    lowered = url.lower()
+    return any(token in lowered for token in ("logo", "icon", "avatar", "button", "badge", "qrcode", "qr-code"))
+
+
 def _parse_date(value: str | None) -> str | None:
     if not value:
         return None
@@ -531,6 +682,34 @@ def _local_name(tag: str) -> str:
 
 
 MAX_ARTICLE_IMAGES = 9
+MIN_DETAIL_CONTENT_CHARS = 260
+MAX_DETAIL_PAGES_PER_SOURCE = 12
+
+ARTICLE_DETAIL_TEXT_TAGS = {"p", "h1", "h2", "h3", "h4", "blockquote", "li"}
+
+ARTICLE_DETAIL_IGNORED_TAGS = {
+    "script",
+    "style",
+    "noscript",
+    "svg",
+    "nav",
+    "header",
+    "footer",
+    "aside",
+    "form",
+    "button",
+}
+
+ARTICLE_DETAIL_JUNK_TEXT = {
+    "copyright",
+    "版权所有",
+    "未经授权",
+    "责任编辑",
+    "相关阅读",
+    "推荐阅读",
+    "扫码",
+    "关注我们",
+}
 
 PORTAL_NON_ARTICLE_TITLES = {
     "zaobao",

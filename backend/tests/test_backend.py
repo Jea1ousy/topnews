@@ -6,7 +6,7 @@ from unittest.mock import patch
 from backend.topnews_backend.academic import build_arxiv_rss_url, parse_arxiv_feed, parse_arxiv_rss, parse_keyword_rule
 from backend.topnews_backend.classifier import classify
 from backend.topnews_backend.config import SourceConfig, load_config
-from backend.topnews_backend.fetchers import parse_cls_telegraph, parse_eastmoney_kuaixun, parse_portal, parse_rss, parse_ths_kuaixun
+from backend.topnews_backend.fetchers import fetch_source, parse_article_detail, parse_cls_telegraph, parse_eastmoney_kuaixun, parse_portal, parse_rss, parse_ths_kuaixun
 from backend.topnews_backend.paper_figures import build_arxiv_html_url, parse_arxiv_primary_figure
 from backend.topnews_backend.scheduler import FetchOptions, ScheduleOptions, _build_jobs, run_fetch_once
 from backend.topnews_backend.service import IngestResult
@@ -85,6 +85,60 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertEqual(articles[0].url, "https://example.com/a")
         self.assertEqual(articles[0].image_url, "https://example.com/a.jpg")
+
+    def test_parse_article_detail_extracts_body_text_and_images(self):
+        body = """
+        <html><head>
+          <meta property="og:description" content="详情页摘要">
+          <meta property="og:image" content="/cover.jpg">
+        </head><body>
+          <nav><p>导航菜单不应进入正文</p></nav>
+          <article>
+            <p>第一段正文内容足够长，可以作为文章详情。</p>
+            <blockquote>引用内容也应该保留下来。</blockquote>
+            <p>第二段正文继续说明更多背景。</p>
+            <img data-src="/detail.jpg">
+          </article>
+          <footer><p>版权所有，不应进入正文</p></footer>
+        </body></html>
+        """.encode()
+
+        detail = parse_article_detail(body, "https://example.com/news/a")
+
+        self.assertEqual(detail.description, "详情页摘要")
+        self.assertIn("第一段正文内容足够长", detail.content)
+        self.assertIn("引用内容也应该保留下来", detail.content)
+        self.assertNotIn("导航菜单", detail.content)
+        self.assertIn("<blockquote>", detail.content_html)
+        self.assertEqual(detail.image_urls, ("https://example.com/cover.jpg", "https://example.com/detail.jpg"))
+
+    def test_fetch_source_enriches_short_rss_articles_from_detail_page(self):
+        source = SourceConfig(name="短RSS", url="https://example.com/rss", kind="rss")
+        rss_body = """
+        <rss><channel><item>
+            <title>科技新闻标题足够长</title>
+            <link>https://example.com/a</link>
+            <description>短摘要</description>
+        </item></channel></rss>
+        """.encode()
+        detail_body = """
+        <html><body><article>
+          <p>详情页第一段正文内容足够长，应该替换 RSS 里的短摘要。</p>
+          <p>详情页第二段正文继续补充更多信息。</p>
+          <img src="/detail.jpg">
+        </article></body></html>
+        """.encode()
+
+        def fake_download(url, timeout, user_agent):
+            return rss_body if url == source.url else detail_body
+
+        with patch("backend.topnews_backend.fetchers._download", side_effect=fake_download):
+            articles = fetch_source(source, timeout=1, user_agent="test", limit=1)
+
+        self.assertEqual(len(articles), 1)
+        self.assertIn("详情页第一段正文内容足够长", articles[0].content)
+        self.assertIn("<p>详情页第二段正文继续补充更多信息。</p>", articles[0].content_html)
+        self.assertEqual(articles[0].image_url, "https://example.com/detail.jpg")
 
     def test_parse_zaobao_portal_filters_non_article_links(self):
         source = SourceConfig(
