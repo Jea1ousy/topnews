@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -30,6 +29,7 @@ import com.example.topnews.ui.screen.home.HomeUiState
 fun HomeHeader(
     uiState: HomeUiState,
     onRefresh: () -> Unit,
+    onAcademicKeywordsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -78,12 +78,27 @@ fun HomeHeader(
             }
             Spacer(modifier = Modifier.weight(1f))
             Surface(
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .clickable { onAcademicKeywordsClick() },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.secondary,
+                contentColor = MaterialTheme.colorScheme.onSecondary
+            ) {
+                Text(
+                    text = "关键词",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Surface(
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary
             ) {
                 Text(
-                    text = "AI回答",
+                    text = "AI总结",
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
@@ -98,8 +113,5 @@ fun HomeHeader(
                 fontSize = 26.sp
             )
         }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        SearchBar(text = uiState.searchText)
     }
 }

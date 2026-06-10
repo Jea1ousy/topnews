@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.topnews.domain.model.NewsArticle
+import com.example.topnews.ui.screen.home.AiSummaryState
 import com.example.topnews.ui.theme.TopnewsTheme
 import kotlinx.coroutines.launch
 import java.net.URI
@@ -79,6 +81,8 @@ import kotlin.math.roundToInt
 @Composable
 fun NewsPreviewOverlay(
     article: NewsArticle,
+    aiSummaryState: AiSummaryState?,
+    onSummarizeClick: (NewsArticle) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -205,6 +209,8 @@ fun NewsPreviewOverlay(
                 if (fullDetail) {
                     FullArticleDetail(
                         article = article,
+                        aiSummaryState = aiSummaryState,
+                        onSummarizeClick = onSummarizeClick,
                         onClose = dismissOverlay,
                         onImageClick = { previewImageUrl = it },
                         modifier = Modifier.fillMaxSize()
@@ -286,6 +292,8 @@ private fun PreviewSummary(
 @Composable
 private fun FullArticleDetail(
     article: NewsArticle,
+    aiSummaryState: AiSummaryState?,
+    onSummarizeClick: (NewsArticle) -> Unit,
     onClose: () -> Unit,
     onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -323,6 +331,12 @@ private fun FullArticleDetail(
                 lineHeight = 29.sp,
                 modifier = Modifier.fillMaxWidth()
             )
+            Spacer(modifier = Modifier.height(16.dp))
+            AiSummaryBlock(
+                article = article,
+                state = aiSummaryState,
+                onSummarizeClick = onSummarizeClick
+            )
             if (article.imageUrl != null && article.imageUrl !in inlineImageUrls) {
                 Spacer(modifier = Modifier.height(20.dp))
                 PreviewImage(
@@ -345,6 +359,68 @@ private fun FullArticleDetail(
                     onImageClick = onImageClick
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun AiSummaryBlock(
+    article: NewsArticle,
+    state: AiSummaryState?,
+    onSummarizeClick: (NewsArticle) -> Unit
+) {
+    val summary = state?.summary ?: article.aiSummary
+    val isLoading = state?.isLoading == true
+    val error = state?.error
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(enabled = summary.isNullOrBlank() && !isLoading) {
+                onSummarizeClick(article)
+            }
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "AI总结",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else if (summary.isNullOrBlank()) {
+                    Text(
+                        text = "生成总结",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = when {
+                    !summary.isNullOrBlank() -> summary
+                    error != null -> error
+                    isLoading -> "正在阅读正文并生成要点..."
+                    else -> "点击生成这篇新闻的简短要点。"
+                },
+                color = if (error != null && summary.isNullOrBlank()) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                fontSize = 15.sp,
+                lineHeight = 23.sp
+            )
         }
     }
 }
@@ -531,24 +607,11 @@ private fun SourceRow(article: NewsArticle) {
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .clip(RoundedCornerShape(21.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = article.source.firstOrNull()?.toString() ?: "新",
-                color = MaterialTheme.colorScheme.primary,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        SourceAvatar(source = article.source, size = 42.dp)
         Spacer(modifier = Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = article.source,
+                text = compactSourceName(article.source),
                 color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -1096,6 +1159,10 @@ private fun FullNewsDetailPreview() {
     TopnewsTheme(dynamicColor = false) {
         FullArticleDetail(
             article = previewArticleSample,
+            aiSummaryState = AiSummaryState(
+                summary = "教育部提醒考生和家长警惕以押题、售卖答案、组织作弊为名的诈骗信息。\n\n相关谣言会制造焦虑并扰乱考试秩序，应以官方渠道发布的信息为准。"
+            ),
+            onSummarizeClick = {},
             onClose = {},
             onImageClick = {},
             modifier = Modifier.fillMaxSize()

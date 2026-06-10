@@ -3,10 +3,13 @@ package com.example.topnews.data.repository
 import android.os.Build
 import com.example.topnews.BuildConfig
 import com.example.topnews.data.remote.TopNewsBackendApi
+import com.example.topnews.data.remote.dto.AddAcademicKeywordRequest
+import com.example.topnews.data.remote.dto.BackendAcademicKeywordDto
 import com.example.topnews.data.remote.dto.BackendNewsDto
 import com.example.topnews.data.remote.dto.BackendNewsPageResponse
 import com.example.topnews.data.remote.dto.BackendPaperDto
 import com.example.topnews.data.remote.dto.BackendPaperPageResponse
+import com.example.topnews.domain.model.AcademicKeyword
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.domain.model.NewsPage
 import com.example.topnews.domain.repository.NewsRepository
@@ -27,6 +30,35 @@ class TopNewsBackendRepository(
 ) : NewsRepository {
     private val baseUrl: String = resolveBaseUrl(configuredBaseUrl, deviceBaseUrl)
     private val api: TopNewsBackendApi by lazy { createApi(baseUrl) }
+
+    suspend fun getAcademicKeywords(): List<AcademicKeyword> {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        return api.getAcademicKeywords().mapNotNull { it.toAcademicKeyword() }
+    }
+
+    suspend fun addAcademicKeyword(keyword: String): AcademicKeyword {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        val normalizedKeyword = keyword.trim()
+        require(normalizedKeyword.isNotBlank()) { "请输入关键词" }
+        return api.addAcademicKeyword(AddAcademicKeywordRequest(normalizedKeyword)).toAcademicKeyword()
+            ?: error("关键词保存失败")
+    }
+
+    suspend fun deleteAcademicKeyword(id: Int) {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        api.deleteAcademicKeyword(id)
+    }
+
+    suspend fun summarizeArticle(article: NewsArticle): String {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        val response = if (article.channelName == ACADEMIC_CATEGORY) {
+            api.summarizePaper(article.id)
+        } else {
+            api.summarizeArticle(article.id)
+        }
+        return response.summary?.takeIf { it.isNotBlank() }
+            ?: error("AI总结返回为空")
+    }
 
     override suspend fun getTopNews(
         page: Int,
@@ -136,6 +168,7 @@ class TopNewsBackendRepository(
             timeText = formatRelativeTime(publishedAt ?: fetchedAt),
             link = url.orEmpty(),
             description = summary?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
+            aiSummary = aiSummary?.takeIf { it.isNotBlank() },
             content = content?.takeIf { it.isNotBlank() } ?: description.orEmpty(),
             html = htmlWithCachedPrimaryImage?.takeIf { it.isNotBlank() } ?: contentHtml.orEmpty(),
             channelName = category.orEmpty(),
@@ -167,6 +200,7 @@ class TopNewsBackendRepository(
             description = summary?.takeIf { it.isNotBlank() }
                 ?: abstractText?.takeIf { it.isNotBlank() }
                 ?: description.orEmpty(),
+            aiSummary = aiSummary?.takeIf { it.isNotBlank() },
             content = listOf(
                 authorText,
                 imageCaption?.takeIf { it.isNotBlank() }?.let { "图注：$it" },
@@ -180,6 +214,20 @@ class TopNewsBackendRepository(
             channelName = if (itemType == "news") "AI前沿" else "学术推荐",
             imageUrl = resolveBackendUrl(imageUrl),
             imageUrls = resolveBackendUrls(emptyList(), imageUrl)
+        )
+    }
+
+    private fun BackendAcademicKeywordDto.toAcademicKeyword(): AcademicKeyword? {
+        val safeId = id ?: return null
+        val safeRule = rawRule?.trim().orEmpty()
+        if (safeRule.isEmpty()) return null
+        return AcademicKeyword(
+            id = safeId,
+            rawRule = safeRule,
+            displayName = displayName?.takeIf { it.isNotBlank() } ?: safeRule,
+            isRequired = isRequired == true,
+            isExcluded = isExcluded == true,
+            isRegex = isRegex == true
         )
     }
 
@@ -205,6 +253,7 @@ class TopNewsBackendRepository(
 
     companion object {
         private const val MAX_REFRESH_EXCLUDE_IDS = 300
+        private const val ACADEMIC_CATEGORY = "学术推荐"
         private const val EMULATOR_HOST_ALIAS = "10.0.2.2"
         private const val DEFAULT_LOCAL_BACKEND_BASE_URL = "http://10.0.2.2:8080/"
 
