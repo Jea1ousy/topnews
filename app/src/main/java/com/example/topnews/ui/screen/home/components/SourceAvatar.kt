@@ -89,6 +89,7 @@ private fun sourceIconRes(source: String): Int? {
         source.contains("财联社", ignoreCase = true) -> R.drawable.cailianshe
         source.contains("东方财富", ignoreCase = true) -> R.drawable.dfcf
         source.contains("联合早报", ignoreCase = true) -> R.drawable.lhzb
+        source.contains("新华社", ignoreCase = true) -> R.drawable.xhs
         source.contains("量子位", ignoreCase = true) -> R.drawable.lzw
         source.contains("少数派", ignoreCase = true) -> R.drawable.ic_source_sspai
         source.contains("TechCrunch", ignoreCase = true) -> R.drawable.techcrunch
