@@ -2,6 +2,8 @@
 
 TopNews 是一个 Android 新闻聚合应用，配套 Python 后端服务。客户端负责新闻流展示、分类浏览、详情预览、AI 摘要触发和学术关键词管理；后端负责抓取 RSS、门户新闻和 arXiv 论文，使用 SQLite 存储并对外提供推荐接口。
 
+![TopNews 项目结构](Structure.png)
+
 ## 运行结构
 
 - `app/`：Android 客户端，使用 Kotlin、Jetpack Compose、Retrofit 和 Material 3。
