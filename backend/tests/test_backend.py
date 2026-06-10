@@ -38,7 +38,7 @@ class BackendTest(unittest.TestCase):
         """.encode()
         articles = parse_rss(body, source)
         self.assertEqual(len(articles), 1)
-        self.assertEqual(articles[0].category, "国内")
+        self.assertEqual(articles[0].category, "时政")
         self.assertEqual(articles[0].region, "境内")
         self.assertEqual(articles[0].image_url, "https://example.com/cover.jpg")
         self.assertEqual(
@@ -277,7 +277,7 @@ class BackendTest(unittest.TestCase):
             url="https://www.zaobao.com.sg/realtime/china",
             kind="portal",
             region="境外",
-            category="国内",
+            category="时政",
         )
         body = """
         <html><head><meta name="description" content="联合早报页面摘要"></head><body>

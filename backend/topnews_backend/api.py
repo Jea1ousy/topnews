@@ -326,7 +326,7 @@ class TopNewsApi:
 
     @staticmethod
     def _compat_channels() -> dict[str, Any]:
-        channels = ["推荐", "国内", "财经", "综合"]
+        channels = ["推荐", "时政", "财经", "综合"]
         return {
             "code": 200,
             "msg": "ok",

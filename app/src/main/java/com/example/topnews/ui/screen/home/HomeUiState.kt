@@ -9,7 +9,7 @@ data class HomeUiState(
     val city: String = "北京",
     val weather: String = "多云",
     val selectedCategory: String = "推荐",
-    val categories: List<String> = listOf("推荐", "AI前沿", "学术推荐", "国内", "财经"),
+    val categories: List<String> = listOf("推荐", "AI前沿", "学术推荐", "时政", "财经"),
     val feedsByCategory: Map<String, CategoryFeedState> = emptyMap(),
     val aiSummaries: Map<String, AiSummaryState> = emptyMap(),
     val academicKeywords: List<AcademicKeyword> = emptyList(),

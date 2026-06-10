@@ -148,6 +148,7 @@ class NewsStore:
             _ensure_column(connection, "articles", "image_cached_at", "TEXT")
             _ensure_column(connection, "articles", "ai_summary", "TEXT")
             _ensure_column(connection, "articles", "ai_summary_at", "TEXT")
+            connection.execute("UPDATE articles SET category = '时政' WHERE category = '国内'")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles(region)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at)")
@@ -338,7 +339,7 @@ class NewsStore:
                         ELSE 0
                     END
                     + CASE a.category
-                        WHEN '国内' THEN 5
+                        WHEN '时政' THEN 5
                         WHEN '国际' THEN 5
                         WHEN '科技' THEN 4
                         WHEN '财经' THEN 4
