@@ -167,9 +167,14 @@ class TopNewsApi:
                 page = self.store.recommend(**self._compat_page_args(params, body))
                 return self.write_json(request, HTTPStatus.OK, self._compat_news_page(page))
             return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "not_found", "path": parsed.path})
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):  # pragma: no cover - client disconnected
+            return
         except Exception as exc:  # pragma: no cover - API safety net
             traceback.print_exc()
-            self.write_json(request, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error", "message": str(exc)})
+            try:
+                self.write_json(request, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error", "message": str(exc)})
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
 
     def write_json(self, request: BaseHTTPRequestHandler, status: HTTPStatus, payload: Any) -> None:
         request.send_response(status.value)

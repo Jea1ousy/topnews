@@ -16,12 +16,12 @@ import com.example.topnews.domain.repository.NewsRepository
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import java.time.Duration
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.net.URI
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class TopNewsBackendRepository(
@@ -305,8 +305,8 @@ class TopNewsBackendRepository(
         private fun createApi(baseUrl: String): TopNewsBackendApi {
             val client = OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .writeTimeout(20, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
                 .build()
 
             return Retrofit.Builder()
@@ -323,34 +323,47 @@ class TopNewsBackendRepository(
         }
 
         private fun formatRelativeTime(rawTime: String?): String {
-            val instant = rawTime?.toInstantOrNull() ?: return "刚刚"
-            val now = Instant.now()
-            val duration = Duration.between(instant, now)
-            if (duration.isNegative) return "刚刚"
+            val date = rawTime?.toDateOrNull() ?: return "刚刚"
+            val durationMillis = System.currentTimeMillis() - date.time
+            if (durationMillis < 0) return "刚刚"
 
-            val minutes = duration.toMinutes()
-            val hours = duration.toHours()
-            val days = duration.toDays()
+            val minutes = TimeUnit.MILLISECONDS.toMinutes(durationMillis)
+            val hours = TimeUnit.MILLISECONDS.toHours(durationMillis)
+            val days = TimeUnit.MILLISECONDS.toDays(durationMillis)
             return when {
                 minutes < 1 -> "刚刚"
                 minutes < 60 -> "${minutes}分钟前"
                 hours < 24 -> "${hours}小时前"
                 days == 1L -> "昨天"
                 days < 7 -> "${days}天前"
-                else -> instant
-                    .atZone(ZoneId.systemDefault())
-                    .toLocalDate()
-                    .formatForNews()
+                else -> date.formatForNews()
             }
         }
 
-        private fun String.toInstantOrNull(): Instant? {
-            return runCatching { Instant.parse(this) }.getOrNull()
+        private fun String.toDateOrNull(): Date? {
+            val value = trim()
+            if (value.isEmpty()) return null
+            return ISO_DATE_PATTERNS.firstNotNullOfOrNull { pattern ->
+                runCatching {
+                    SimpleDateFormat(pattern, Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("UTC")
+                    }.parse(value)
+                }.getOrNull()
+            }
         }
 
-        private fun LocalDate.formatForNews(): String {
-            val pattern = if (year == LocalDate.now().year) "MM-dd" else "yyyy-MM-dd"
-            return format(DateTimeFormatter.ofPattern(pattern))
+        private fun Date.formatForNews(): String {
+            val currentYear = Calendar.getInstance().get(Calendar.YEAR)
+            val itemYear = Calendar.getInstance().apply { time = this@formatForNews }.get(Calendar.YEAR)
+            val pattern = if (itemYear == currentYear) "MM-dd" else "yyyy-MM-dd"
+            return SimpleDateFormat(pattern, Locale.getDefault()).format(this)
         }
+
+        private val ISO_DATE_PATTERNS = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX",
+            "yyyy-MM-dd HH:mm:ss"
+        )
     }
 }
