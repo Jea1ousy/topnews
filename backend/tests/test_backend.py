@@ -140,6 +140,32 @@ class BackendTest(unittest.TestCase):
         self.assertIn("<p>详情页第二段正文继续补充更多信息。</p>", articles[0].content_html)
         self.assertEqual(articles[0].image_url, "https://example.com/detail.jpg")
 
+    def test_fetch_source_enriches_portal_articles_from_detail_page(self):
+        source = SourceConfig(name="新华社首页", url="https://example.com/", kind="portal")
+        portal_body = """
+        <html><body>
+          <a href="/news/a.html">新华社新闻标题足够长可以入库</a>
+        </body></html>
+        """.encode()
+        detail_body = """
+        <html><head><meta property="og:image" content="/xinhua-cover.jpg"></head><body>
+          <article>
+            <p>新华社详情页第一段正文足够长，应该补入数据库。</p>
+            <p>新华社详情页第二段正文继续补充更多现场信息。</p>
+          </article>
+        </body></html>
+        """.encode()
+
+        def fake_download(url, timeout, user_agent):
+            return portal_body if url == source.url else detail_body
+
+        with patch("backend.topnews_backend.fetchers._download", side_effect=fake_download):
+            articles = fetch_source(source, timeout=1, user_agent="test", limit=1)
+
+        self.assertEqual(len(articles), 1)
+        self.assertIn("新华社详情页第一段正文足够长", articles[0].content)
+        self.assertEqual(articles[0].image_url, "https://example.com/xinhua-cover.jpg")
+
     def test_parse_zaobao_portal_filters_non_article_links(self):
         source = SourceConfig(
             name="联合早报中国即时",

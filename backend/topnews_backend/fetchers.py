@@ -59,7 +59,8 @@ def fetch_source(source: SourceConfig, timeout: float, user_agent: str, limit: i
         articles = parse_rss(body, source, limit=limit)
         return _enrich_short_articles_from_pages(articles, source, timeout, user_agent)
     if source.kind == "portal":
-        return parse_portal(body, source, limit=limit)
+        articles = parse_portal(body, source, limit=limit)
+        return _enrich_short_articles_from_pages(articles, source, timeout, user_agent)
     if source.kind == "cls_telegraph":
         return parse_cls_telegraph(body, source, limit=limit)
     if source.kind == "eastmoney_kuaixun":
