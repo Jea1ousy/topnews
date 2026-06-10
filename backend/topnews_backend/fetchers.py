@@ -504,13 +504,14 @@ def _image_from_attrs(attrs: dict[str, str], base_url: str) -> str | None:
     srcset = attrs.get("srcset") or attrs.get("data-srcset")
     if srcset:
         first = srcset.split(",", 1)[0].strip().split(" ", 1)[0]
-        if first:
-            return _absolute_image_url(first, base_url)
+        image_url = _absolute_image_url(first, base_url) if first else None
+        if image_url and not _looks_junk_image_candidate(image_url, attrs):
+            return image_url
 
     for key in ("data-original", "data-src", "data-lazy-src", "src"):
         value = attrs.get(key, "").strip()
         image_url = _absolute_image_url(value, base_url)
-        if image_url:
+        if image_url and not _looks_junk_image_candidate(image_url, attrs):
             return image_url
     return None
 
@@ -528,7 +529,7 @@ def _dedupe_images(values: list[str]) -> tuple[str, ...]:
     images: list[str] = []
     seen: set[str] = set()
     for value in values:
-        if value and value not in seen:
+        if value and value not in seen and not _looks_decorative_image(value):
             seen.add(value)
             images.append(value)
         if len(images) >= MAX_ARTICLE_IMAGES:
@@ -549,7 +550,15 @@ def _is_article_text_block(text: str, tag: str) -> bool:
 
 def _looks_decorative_image(url: str) -> bool:
     lowered = url.lower()
-    return any(token in lowered for token in ("logo", "icon", "avatar", "button", "badge", "qrcode", "qr-code"))
+    return any(token in lowered for token in ("logo", "icon", "avatar", "button", "badge", "qrcode", "qr-code", "placeholder", "default"))
+
+
+def _looks_junk_image_candidate(url: str, attrs: dict[str, str]) -> bool:
+    text = " ".join(
+        attrs.get(key, "")
+        for key in ("alt", "title", "aria-label", "data-alt")
+    ).strip().lower()
+    return _looks_decorative_image(url) or any(token in text for token in ARTICLE_IMAGE_JUNK_TEXT)
 
 
 def _parse_date(value: str | None) -> str | None:
@@ -710,6 +719,16 @@ ARTICLE_DETAIL_JUNK_TEXT = {
     "推荐阅读",
     "扫码",
     "关注我们",
+}
+
+ARTICLE_IMAGE_JUNK_TEXT = {
+    "广告",
+    "推广",
+    "赞助",
+    "阿里云",
+    "aliyun",
+    "placeholder",
+    "default",
 }
 
 PORTAL_NON_ARTICLE_TITLES = {

@@ -112,6 +112,25 @@ class BackendTest(unittest.TestCase):
         self.assertIn("<blockquote>", detail.content_html)
         self.assertEqual(detail.image_urls, ("https://example.com/cover.jpg", "https://example.com/detail.jpg"))
 
+    def test_parse_rss_skips_ad_placeholder_images(self):
+        source = SourceConfig(name="36氪快讯", url="https://example.com/rss", kind="rss")
+        body = """
+        <rss><channel><item>
+            <title>科技新闻标题足够长</title>
+            <link>https://example.com/a</link>
+            <description><![CDATA[
+                <p>新闻摘要内容足够长。</p>
+                <img src="/aliyun-ad.jpg" alt="阿里云" />
+                <img src="/real-cover.jpg" alt="真实新闻配图" />
+            ]]></description>
+        </item></channel></rss>
+        """.encode()
+
+        articles = parse_rss(body, source)
+
+        self.assertEqual(articles[0].image_url, "https://example.com/real-cover.jpg")
+        self.assertEqual(articles[0].image_urls, ("https://example.com/real-cover.jpg",))
+
     def test_fetch_source_enriches_short_rss_articles_from_detail_page(self):
         source = SourceConfig(name="短RSS", url="https://example.com/rss", kind="rss")
         rss_body = """
