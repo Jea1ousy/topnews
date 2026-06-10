@@ -85,9 +85,12 @@ private fun ArticleMeta(article: NewsArticle) {
             )
             Spacer(modifier = Modifier.width(5.dp))
         }
+        SourceAvatar(source = article.source, size = 18.dp)
+        Spacer(modifier = Modifier.width(5.dp))
         val commentText = if (article.commentCount > 0) "${article.commentCount}评论  " else ""
+        val sourceText = compactSourceName(article.source)
         Text(
-            text = "${article.source}  $commentText${article.timeText}",
+            text = "$sourceText  $commentText${article.timeText}",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
             maxLines = 1,
