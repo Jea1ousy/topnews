@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 
@@ -44,11 +45,18 @@ class PortalLink:
 
 
 def fetch_source(source: SourceConfig, timeout: float, user_agent: str, limit: int = 30) -> list[RawArticle]:
-    body = _download(source.url, timeout, user_agent)
+    url = _cls_telegraph_url(source.url, limit) if source.kind == "cls_telegraph" else source.url
+    body = _download(url, timeout, user_agent)
     if source.kind == "rss":
         return parse_rss(body, source, limit=limit)
     if source.kind == "portal":
         return parse_portal(body, source, limit=limit)
+    if source.kind == "cls_telegraph":
+        return parse_cls_telegraph(body, source, limit=limit)
+    if source.kind == "eastmoney_kuaixun":
+        return parse_eastmoney_kuaixun(body, source, limit=limit)
+    if source.kind == "ths_kuaixun":
+        return parse_ths_kuaixun(body, source, limit=limit)
     raise FetchError(f"Unsupported source kind: {source.kind}")
 
 
@@ -94,7 +102,7 @@ def parse_portal(body: bytes, source: SourceConfig, limit: int = 30) -> list[Raw
     for link in parser.links:
         clean_title = _clean_inline_text(link.title)
         url = link.url
-        if len(clean_title) < 6 or url in seen_urls:
+        if not _is_portal_article_link(clean_title, url, source) or url in seen_urls:
             continue
         seen_urls.add(url)
         image_url = link.image_url or parser.image_for_title(clean_title) or parser.image_url
@@ -103,6 +111,86 @@ def parse_portal(body: bytes, source: SourceConfig, limit: int = 30) -> list[Raw
         if len(articles) >= limit:
             break
 
+    return articles
+
+
+def parse_cls_telegraph(body: bytes, source: SourceConfig, limit: int = 30) -> list[RawArticle]:
+    data = _json_body(body, source)
+    articles: list[RawArticle] = []
+    for item in data.get("data", {}).get("roll_data", [])[:limit]:
+        article_id = str(item.get("id") or "").strip()
+        content = _clean_text(str(item.get("content") or item.get("brief") or ""))
+        title = _clean_inline_text(str(item.get("brief") or content))[:100]
+        if not title or not article_id:
+            continue
+        articles.append(
+            _article_from_values(
+                source,
+                title,
+                f"https://www.cls.cn/telegraph/{article_id}",
+                content,
+                content,
+                "",
+                (),
+                _timestamp_to_iso(item.get("ctime")),
+            )
+        )
+    return articles
+
+
+def parse_eastmoney_kuaixun(body: bytes, source: SourceConfig, limit: int = 30) -> list[RawArticle]:
+    text = body.decode("utf-8", errors="ignore")
+    match = re.search(r"var\s+ajaxResult\s*=\s*(\{.*\})\s*;?", text, re.DOTALL)
+    if not match:
+        raise FetchError(f"Eastmoney response parse failed for {source.name}")
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise FetchError(f"Eastmoney JSON parse failed for {source.name}: {exc}") from exc
+
+    articles: list[RawArticle] = []
+    for item in data.get("LivesList", [])[:limit]:
+        news_id = str(item.get("newsid") or "").strip()
+        title = _clean_inline_text(str(item.get("title") or ""))
+        description = _clean_text(str(item.get("digest") or ""))
+        if not title or not news_id:
+            continue
+        articles.append(
+            _article_from_values(
+                source,
+                title,
+                f"https://kuaixun.eastmoney.com/a/{news_id}",
+                description,
+                description,
+                "",
+                (),
+                _parse_china_local_time(str(item.get("showtime") or "")),
+            )
+        )
+    return articles
+
+
+def parse_ths_kuaixun(body: bytes, source: SourceConfig, limit: int = 30) -> list[RawArticle]:
+    data = _json_body(body, source)
+    articles: list[RawArticle] = []
+    for item in data.get("data", {}).get("list", [])[:limit]:
+        seq = str(item.get("seq") or "").strip()
+        title = _clean_inline_text(str(item.get("title") or ""))
+        description = _clean_text(str(item.get("digest") or item.get("remark") or ""))
+        if not title or not seq:
+            continue
+        articles.append(
+            _article_from_values(
+                source,
+                title,
+                f"https://news.10jqka.com.cn/{seq}",
+                description,
+                description,
+                "",
+                (),
+                _timestamp_to_iso(item.get("ctime")),
+            )
+        )
     return articles
 
 
@@ -151,7 +239,7 @@ class PortalParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() == "a" and self._current_href:
-            text = _clean_inline_text("".join(self._current_text))
+            text = _dedupe_repeated_title(_clean_inline_text("".join(self._current_text)))
             if text:
                 self.links.append(PortalLink(title=text, url=self._current_href, image_url=self._current_image_url))
             self._current_href = None
@@ -169,7 +257,16 @@ class PortalParser(HTMLParser):
 
 
 def _download(url: str, timeout: float, user_agent: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": user_agent, "Accept": "*/*"})
+    headers = {"User-Agent": user_agent, "Accept": "*/*"}
+    parsed_host = urllib.parse.urlparse(url).netloc
+    if parsed_host.endswith("cls.cn"):
+        headers["Referer"] = "https://www.cls.cn/telegraph"
+        headers["Content-Type"] = "application/json;charset=utf-8"
+    elif parsed_host.endswith("eastmoney.com"):
+        headers["Referer"] = "https://kuaixun.eastmoney.com/"
+    elif parsed_host.endswith("10jqka.com.cn"):
+        headers["Referer"] = "https://news.10jqka.com.cn/"
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
@@ -318,6 +415,85 @@ def _parse_date(value: str | None) -> str | None:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+def _json_body(body: bytes, source: SourceConfig) -> dict[str, object]:
+    try:
+        parsed = json.loads(body.decode("utf-8", errors="ignore"))
+    except json.JSONDecodeError as exc:
+        raise FetchError(f"JSON parse failed for {source.name}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise FetchError(f"JSON root is not an object for {source.name}")
+    return parsed
+
+
+def _timestamp_to_iso(value: object) -> str | None:
+    try:
+        timestamp = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+
+
+def _cls_telegraph_url(base_url: str, limit: int) -> str:
+    parsed_url = urllib.parse.urlparse(base_url)
+    params = {key: values[-1] for key, values in urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True).items()}
+    params.pop("sign", None)
+    params.setdefault("app", "CailianpressWeb")
+    params.setdefault("category", "")
+    params.setdefault("os", "web")
+    params["rn"] = str(min(max(limit, 1), 50))
+    query = urllib.parse.urlencode(params)
+    signature = hashlib.md5(hashlib.sha1(query.encode("utf-8")).hexdigest().encode("utf-8")).hexdigest()
+    return urllib.parse.urlunparse(
+        (
+            parsed_url.scheme,
+            parsed_url.netloc,
+            parsed_url.path,
+            parsed_url.params,
+            f"{query}&sign={signature}",
+            parsed_url.fragment,
+        )
+    )
+
+
+def _parse_china_local_time(value: str) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone(timedelta(hours=8))).astimezone(timezone.utc).isoformat()
+
+
+def _is_portal_article_link(title: str, url: str, source: SourceConfig) -> bool:
+    if len(title) < 6:
+        return False
+    if title.lower() in PORTAL_NON_ARTICLE_TITLES:
+        return False
+    if re.fullmatch(r"[\d\s+\-()]{6,}", title):
+        return False
+
+    parsed_url = urllib.parse.urlparse(url)
+    host = parsed_url.netloc.lower()
+    path = parsed_url.path.strip("/")
+    if not path:
+        return False
+
+    if "zaobao.com.sg" in urllib.parse.urlparse(source.url).netloc.lower():
+        if host and not host.endswith("zaobao.com.sg"):
+            return False
+        if path in {"realtime/china", "news/china", "news"}:
+            return False
+        if path.startswith(("shop", "zshop", "advertise", "subscription", "about", "contact")):
+            return False
+        if not re.search(r"\d{6,}", path):
+            return False
+
+    return True
+
+
 def _clean_text(value: str) -> str:
     text = html.unescape(value or "")
     text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", text)
@@ -332,8 +508,33 @@ def _clean_inline_text(value: str) -> str:
     return re.sub(r"\s+", " ", _clean_text(value)).strip()
 
 
+def _dedupe_repeated_title(value: str) -> str:
+    if not value:
+        return value
+    parts = value.split(" ")
+    if len(parts) % 2 == 0:
+        midpoint = len(parts) // 2
+        first = " ".join(parts[:midpoint])
+        second = " ".join(parts[midpoint:])
+        if first and first == second:
+            return first
+    compact = value.replace(" ", "")
+    if len(compact) % 2 == 0:
+        midpoint = len(compact) // 2
+        if compact[:midpoint] == compact[midpoint:]:
+            return compact[:midpoint]
+    return value
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 
 MAX_ARTICLE_IMAGES = 9
+
+PORTAL_NON_ARTICLE_TITLES = {
+    "zaobao",
+    "zaobao.com",
+    "zshop 集品店",
+    "新报业媒体网站",
+}
