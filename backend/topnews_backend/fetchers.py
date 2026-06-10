@@ -357,8 +357,8 @@ class ArticleDetailParser(HTMLParser):
         if lower_tag == "img":
             image_url = _image_from_attrs(attr_map, self.base_url)
             if image_url:
-                self._add_image(image_url)
-                if self._capture_tag:
+                added = self._add_image(image_url)
+                if added and self._capture_tag:
                     self.html_blocks.append(f'<img src="{html.escape(image_url, quote=True)}" />')
             return
         if lower_tag in ARTICLE_DETAIL_TEXT_TAGS and not self._capture_tag:
@@ -386,10 +386,12 @@ class ArticleDetailParser(HTMLParser):
             self._capture_tag = None
             self._capture_text = []
 
-    def _add_image(self, url: str) -> None:
+    def _add_image(self, url: str) -> bool:
         image_url = _absolute_image_url(url, self.base_url)
         if image_url and image_url not in self.image_urls and not _looks_decorative_image(image_url):
             self.image_urls.append(image_url)
+            return True
+        return False
 
 
 def _download(url: str, timeout: float, user_agent: str) -> bytes:
@@ -556,8 +558,14 @@ def _looks_decorative_image(url: str) -> bool:
             "logo",
             "icon",
             "avatar",
+            "author",
             "button",
             "badge",
+            "head",
+            "portrait",
+            "profile",
+            "user",
+            "touxiang",
             "qrcode",
             "qr-code",
             "qr_",
@@ -569,6 +577,9 @@ def _looks_decorative_image(url: str) -> bool:
             "appcode",
             "placeholder",
             "default",
+            "blank",
+            "empty",
+            "noimage",
         )
     )
 
@@ -779,6 +790,13 @@ ARTICLE_IMAGE_JUNK_TEXT = {
     "扫一扫",
     "客户端",
     "微信",
+    "头像",
+    "作者",
+    "用户",
+    "默认图",
+    "占位",
+    "空白",
+    "无图",
     "weixin",
     "wechat",
     "placeholder",

@@ -124,6 +124,7 @@ class BackendTest(unittest.TestCase):
         detail = parse_article_detail(body, "https://www.news.cn/a.html")
 
         self.assertEqual(detail.image_urls, ("https://www.news.cn/images/news-cover.jpg",))
+        self.assertNotIn("<img", detail.content_html)
 
     def test_parse_rss_skips_ad_placeholder_images(self):
         source = SourceConfig(name="36氪快讯", url="https://example.com/rss", kind="rss")

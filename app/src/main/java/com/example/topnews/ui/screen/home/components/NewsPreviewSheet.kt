@@ -264,12 +264,13 @@ private fun PreviewSummary(
                 .fillMaxSize()
                 .padding(horizontal = 20.dp)
         ) {
-            if (article.imageUrl != null) {
+            val leadImageUrl = article.imageUrl?.takeUnless(::isJunkArticleImageUrl)
+            if (leadImageUrl != null) {
                 PreviewImage(
-                    imageUrl = article.imageUrl,
+                    imageUrl = leadImageUrl,
                     contentDescription = article.title,
                     videoDuration = article.videoDuration,
-                    onClick = { onImageClick(article.imageUrl) },
+                    onClick = { onImageClick(leadImageUrl) },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(18.dp))
@@ -278,7 +279,7 @@ private fun PreviewSummary(
                 text = article.readableBody(),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(if (article.imageUrl != null) 2f else 1f),
+                    .weight(if (leadImageUrl != null) 2f else 1f),
                 color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 17.sp,
                 lineHeight = 28.sp,
@@ -337,13 +338,14 @@ private fun FullArticleDetail(
                 state = aiSummaryState,
                 onSummarizeClick = onSummarizeClick
             )
-            if (article.imageUrl != null && article.imageUrl !in inlineImageUrls) {
+            val leadImageUrl = article.imageUrl?.takeUnless(::isJunkArticleImageUrl)
+            if (leadImageUrl != null && leadImageUrl !in inlineImageUrls) {
                 Spacer(modifier = Modifier.height(20.dp))
                 PreviewImage(
-                    imageUrl = article.imageUrl,
+                    imageUrl = leadImageUrl,
                     contentDescription = article.title,
                     videoDuration = article.videoDuration,
-                    onClick = { onImageClick(article.imageUrl) },
+                    onClick = { onImageClick(leadImageUrl) },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -540,7 +542,7 @@ private fun ArticleImageGallery(
 ) {
     val extraImages = remember(article.imageUrl, article.imageUrls) {
         article.imageUrls
-            .filter { it.isNotBlank() && it != article.imageUrl }
+            .filter { it.isNotBlank() && it != article.imageUrl && !isJunkArticleImageUrl(it) }
             .distinct()
     }
     if (extraImages.isEmpty()) return
@@ -649,16 +651,16 @@ private fun SourceRow(article: NewsArticle) {
 private fun PreviewImage(
     imageUrl: String,
     contentDescription: String,
-    videoDuration: String? = null,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier.fillMaxWidth()
+    modifier: Modifier = Modifier,
+    videoDuration: String? = null
 ) {
-    var imageAspectRatio by remember(imageUrl) {
+    val imageAspectRatioState = remember(imageUrl) {
         mutableFloatStateOf(DEFAULT_IMAGE_ASPECT_RATIO)
     }
     Box(
         modifier = modifier
-            .aspectRatio(imageAspectRatio)
+            .aspectRatio(imageAspectRatioState.floatValue)
             .animateContentSize()
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
@@ -672,7 +674,7 @@ private fun PreviewImage(
             onSuccess = { state ->
                 val size = state.painter.intrinsicSize
                 if (size.width > 0f && size.height > 0f) {
-                    imageAspectRatio = (size.width / size.height)
+                    imageAspectRatioState.floatValue = (size.width / size.height)
                         .coerceIn(MIN_IMAGE_ASPECT_RATIO, MAX_IMAGE_ASPECT_RATIO)
                 }
             }
@@ -1045,19 +1047,24 @@ private fun inlineImageUrl(
     knownImageUrls.firstOrNull { knownUrl ->
         val knownPath = knownUrl.substringBefore("?").trimEnd('/')
         val rawPath = rawValue.substringBefore("?").trimStart('/')
-        rawPath.isNotBlank() && knownPath.endsWith(rawPath)
+        rawPath.isNotBlank() && knownPath.endsWith(rawPath) && !isJunkArticleImageUrl(knownUrl)
     }?.let { return it }
 
-    if (rawValue.startsWith("http://") || rawValue.startsWith("https://")) {
-        return rawValue
-    }
-    if (rawValue.startsWith("//")) {
+    val resolved = if (rawValue.startsWith("http://") || rawValue.startsWith("https://")) {
+        rawValue
+    } else if (rawValue.startsWith("//")) {
         val scheme = baseUrl.substringBefore("://", "https")
-        return "$scheme:$rawValue"
+        "$scheme:$rawValue"
+    } else {
+        runCatching { URI(baseUrl).resolve(rawValue).toString() }
+            .getOrElse { rawValue }
     }
+    return resolved.takeUnless(::isJunkArticleImageUrl)
+}
 
-    return runCatching { URI(baseUrl).resolve(rawValue).toString() }
-        .getOrElse { rawValue }
+private fun isJunkArticleImageUrl(url: String): Boolean {
+    val lowered = url.lowercase()
+    return JUNK_IMAGE_URL_TOKENS.any { it in lowered }
 }
 
 private fun NewsArticle.readableParagraphs(): List<String> {
@@ -1125,6 +1132,28 @@ private val INLINE_WHITESPACE_REGEX = Regex("[\\t ]+")
 private val MULTIPLE_NEWLINES_REGEX = Regex("\\n{3,}")
 private val PARAGRAPH_BREAK_REGEX = Regex("\\n+")
 private val SENTENCE_BOUNDARY_REGEX = Regex("(?<=[。！？；!?;])|(?<=[.!?])\\s+")
+private val JUNK_IMAGE_URL_TOKENS = listOf(
+    "avatar",
+    "author",
+    "head",
+    "portrait",
+    "profile",
+    "touxiang",
+    "qrcode",
+    "qr-code",
+    "qr_",
+    "_qr",
+    "ewm",
+    "weixin",
+    "wechat",
+    "wxcode",
+    "appcode",
+    "placeholder",
+    "default",
+    "blank",
+    "empty",
+    "noimage"
+)
 
 @Preview(
     name = "News Preview Card",
