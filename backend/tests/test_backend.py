@@ -112,6 +112,19 @@ class BackendTest(unittest.TestCase):
         self.assertIn("<blockquote>", detail.content_html)
         self.assertEqual(detail.image_urls, ("https://example.com/cover.jpg", "https://example.com/detail.jpg"))
 
+    def test_parse_article_detail_skips_qr_code_images(self):
+        body = """
+        <html><body><article>
+          <p>新华社详情页正文内容足够长，应该保留这段文本。</p>
+          <img src="/images/ewm.jpg" alt="扫一扫下载客户端">
+          <img src="/images/news-cover.jpg" alt="新闻现场图片">
+        </article></body></html>
+        """.encode()
+
+        detail = parse_article_detail(body, "https://www.news.cn/a.html")
+
+        self.assertEqual(detail.image_urls, ("https://www.news.cn/images/news-cover.jpg",))
+
     def test_parse_rss_skips_ad_placeholder_images(self):
         source = SourceConfig(name="36氪快讯", url="https://example.com/rss", kind="rss")
         body = """
@@ -184,6 +197,23 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertIn("新华社详情页第一段正文足够长", articles[0].content)
         self.assertEqual(articles[0].image_url, "https://example.com/xinhua-cover.jpg")
+
+    def test_parse_xinhua_portal_filters_non_news_and_foreign_links(self):
+        source = SourceConfig(name="新华社首页", url="https://www.news.cn/", kind="portal")
+        body = """
+        <html><body>
+          <a href="https://english.news.cn/20260610/a.html">English headline should be ignored</a>
+          <a href="/world/20260610/a.html">全球新闻标题也不进新华社首页源</a>
+          <a href="/zhuanti/20260610/a.html">专题入口标题不应入库</a>
+          <a href="/20260610/valid123.html">新华社中文新闻标题足够长可以入库</a>
+        </body></html>
+        """.encode()
+
+        articles = parse_portal(body, source)
+
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].title, "新华社中文新闻标题足够长可以入库")
+        self.assertEqual(articles[0].url, "https://www.news.cn/20260610/valid123.html")
 
     def test_parse_zaobao_portal_filters_non_article_links(self):
         source = SourceConfig(

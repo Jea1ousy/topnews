@@ -550,7 +550,27 @@ def _is_article_text_block(text: str, tag: str) -> bool:
 
 def _looks_decorative_image(url: str) -> bool:
     lowered = url.lower()
-    return any(token in lowered for token in ("logo", "icon", "avatar", "button", "badge", "qrcode", "qr-code", "placeholder", "default"))
+    return any(
+        token in lowered
+        for token in (
+            "logo",
+            "icon",
+            "avatar",
+            "button",
+            "badge",
+            "qrcode",
+            "qr-code",
+            "qr_",
+            "_qr",
+            "ewm",
+            "weixin",
+            "wechat",
+            "wxcode",
+            "appcode",
+            "placeholder",
+            "default",
+        )
+    )
 
 
 def _looks_junk_image_candidate(url: str, attrs: dict[str, str]) -> bool:
@@ -631,6 +651,8 @@ def _parse_china_local_time(value: str) -> str | None:
 def _is_portal_article_link(title: str, url: str, source: SourceConfig) -> bool:
     if len(title) < 6:
         return False
+    if not _looks_like_chinese_news_title(title):
+        return False
     if title.lower() in PORTAL_NON_ARTICLE_TITLES:
         return False
     if re.fullmatch(r"[\d\s+\-()]{6,}", title):
@@ -642,7 +664,18 @@ def _is_portal_article_link(title: str, url: str, source: SourceConfig) -> bool:
     if not path:
         return False
 
-    if "zaobao.com.sg" in urllib.parse.urlparse(source.url).netloc.lower():
+    source_host = urllib.parse.urlparse(source.url).netloc.lower()
+    if "news.cn" in source_host or "xinhuanet.com" in source_host:
+        if host and not (host.endswith("news.cn") or host.endswith("xinhuanet.com")):
+            return False
+        if path.startswith(PORTAL_NON_ARTICLE_PATH_PREFIXES):
+            return False
+        if not path.endswith((".html", ".htm")):
+            return False
+        if not re.search(r"\d", path):
+            return False
+
+    if "zaobao.com.sg" in source_host:
         if host and not host.endswith("zaobao.com.sg"):
             return False
         if path in {"realtime/china", "news/china", "news"}:
@@ -653,6 +686,17 @@ def _is_portal_article_link(title: str, url: str, source: SourceConfig) -> bool:
             return False
 
     return True
+
+
+def _looks_like_chinese_news_title(title: str) -> bool:
+    compact = re.sub(r"\s+", "", title)
+    if not compact:
+        return False
+    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", compact))
+    ascii_letters = len(re.findall(r"[A-Za-z]", compact))
+    if chinese_chars < 4:
+        return False
+    return chinese_chars >= ascii_letters
 
 
 def _clean_text(value: str) -> str:
@@ -719,6 +763,9 @@ ARTICLE_DETAIL_JUNK_TEXT = {
     "推荐阅读",
     "扫码",
     "关注我们",
+    "扫一扫",
+    "下载客户端",
+    "新华社客户端",
 }
 
 ARTICLE_IMAGE_JUNK_TEXT = {
@@ -727,6 +774,13 @@ ARTICLE_IMAGE_JUNK_TEXT = {
     "赞助",
     "阿里云",
     "aliyun",
+    "二维码",
+    "扫码",
+    "扫一扫",
+    "客户端",
+    "微信",
+    "weixin",
+    "wechat",
     "placeholder",
     "default",
 }
@@ -737,3 +791,27 @@ PORTAL_NON_ARTICLE_TITLES = {
     "zshop 集品店",
     "新报业媒体网站",
 }
+
+PORTAL_NON_ARTICLE_PATH_PREFIXES = (
+    "photo",
+    "video",
+    "comments",
+    "fortune",
+    "world",
+    "english",
+    "french",
+    "spanish",
+    "russian",
+    "arabic",
+    "german",
+    "portuguese",
+    "jp",
+    "kr",
+    "app",
+    "download",
+    "mobile",
+    "client",
+    "zhuanti",
+    "zt",
+    "special",
+)
