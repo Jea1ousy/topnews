@@ -21,5 +21,11 @@ backend/data/
 __pycache__/
 .pytest_cache/
 documents/development-log-*.md
+documents/
+backend/README.md
+backend/scripts/
+backend/tests/
+app/src/test/
+app/src/androidTest/
 
 /.claude
