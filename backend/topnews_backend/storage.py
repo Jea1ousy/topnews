@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import json
+import re
 import sqlite3
 import urllib.parse
 from contextlib import contextmanager
@@ -319,40 +320,26 @@ class NewsStore:
 
         with self.connect() as connection:
             total_count = connection.execute(f"SELECT COUNT(*) AS total FROM articles a {where}", params).fetchone()["total"]
+            # 取一个较大的候选集用于 Python 层重排（时间衰减 + 质量分 + 软去重），
+            # 粗排仅按时间倒序，精排在内存里完成。
+            candidate_limit = min(total_count, max(page * page_size, 100))
             rows = connection.execute(
                 f"""
                 SELECT
                     a.id, a.external_id, a.title, a.url, a.source, a.region, a.category,
                     a.description, a.content, a.content_html, a.image_url, a.image_urls,
                     a.published_at, a.fetched_at, a.ai_summary,
-                    a.image_data IS NOT NULL AS image_cached,
-                    CASE
-                        WHEN a.image_url IS NOT NULL AND a.image_url != '' THEN 6
-                        ELSE 0
-                    END
-                    + CASE
-                        WHEN a.description IS NOT NULL AND length(a.description) > 20 THEN 4
-                        ELSE 0
-                    END
-                    + CASE
-                        WHEN a.published_at IS NOT NULL THEN 8
-                        ELSE 0
-                    END
-                    + CASE a.category
-                        WHEN '时政' THEN 5
-                        WHEN '国际' THEN 5
-                        WHEN '科技' THEN 4
-                        WHEN '财经' THEN 4
-                        ELSE 1
-                    END AS rank_score
+                    a.image_data IS NOT NULL AS image_cached
                 FROM articles a
                 {where}
-                ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, rank_score DESC, a.id DESC
-                LIMIT ? OFFSET ?
+                ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
+                LIMIT ?
                 """,
-                [*params, page_size, offset],
+                [*params, candidate_limit],
             ).fetchall()
-        return Page(items=[_row_to_article(row) for row in rows], page=page, page_size=page_size, total_count=total_count)
+        articles = [_row_to_article(row) for row in rows]
+        ranked = _rank_articles(articles)
+        return Page(items=ranked[offset : offset + page_size], page=page, page_size=page_size, total_count=total_count)
 
     def categories(self) -> list[dict[str, object]]:
         with self.connect() as connection:
@@ -684,41 +671,59 @@ class NewsStore:
                 params,
             ).fetchall()
 
-        scored: list[Paper] = []
+        scored: list[tuple[float, Paper]] = []
+        has_positive_rules = any(not rule.is_excluded for rule in rules)
         for row in rows:
             paper = _row_to_paper(row)
             match = score_paper(paper.title, paper.abstract, paper.categories, rules)
-            if rules and match.score < 0:
-                continue
+            # 有规则时只保留正分论文（命中且未被排除规则判负）。
             if rules and match.score <= 0:
                 continue
+            if has_positive_rules and not match.matched_keywords:
+                continue
             scored.append(
-                Paper(
-                    id=paper.id,
-                    external_id=paper.external_id,
-                    title=paper.title,
-                    authors=paper.authors,
-                    abstract=paper.abstract,
-                    source=paper.source,
-                    url=paper.url,
-                    pdf_url=paper.pdf_url,
-                    image_url=paper.image_url,
-                    image_caption=paper.image_caption,
-                    image_cached=paper.image_cached,
-                    categories=paper.categories,
-                    published_at=paper.published_at,
-                    updated_at=paper.updated_at,
-                    fetched_at=paper.fetched_at,
-                    figure_checked_at=paper.figure_checked_at,
-                    ai_summary=paper.ai_summary,
-                    matched_keywords=list(match.matched_keywords),
-                    score=match.score,
+                (
+                    float(match.score),
+                    Paper(
+                        id=paper.id,
+                        external_id=paper.external_id,
+                        title=paper.title,
+                        authors=paper.authors,
+                        abstract=paper.abstract,
+                        source=paper.source,
+                        url=paper.url,
+                        pdf_url=paper.pdf_url,
+                        image_url=paper.image_url,
+                        image_caption=paper.image_caption,
+                        image_cached=paper.image_cached,
+                        categories=paper.categories,
+                        published_at=paper.published_at,
+                        updated_at=paper.updated_at,
+                        fetched_at=paper.fetched_at,
+                        figure_checked_at=paper.figure_checked_at,
+                        ai_summary=paper.ai_summary,
+                        matched_keywords=list(match.matched_keywords),
+                        score=match.score,
+                    ),
                 )
             )
 
-        scored.sort(key=lambda paper: (paper.score or 0, paper.published_at or paper.fetched_at), reverse=True)
+        # 相关度优先：按分数降序，再按时间兜底。
+        scored.sort(key=lambda pair: (pair[0], pair[1].published_at or pair[1].fetched_at), reverse=True)
+
+        # 软去重：arXiv 同工作多版本/重复标题，低分篇降权后重排。
+        kept: list[tuple[float, Paper]] = []
+        for score, paper in scored:
+            for kept_score, kept_paper in kept:
+                if _title_similarity(paper.title, kept_paper.title) >= _PAPER_DEDUP_THRESHOLD:
+                    score *= _PAPER_DEDUP_PENALTY
+                    break
+            kept.append((score, paper))
+        kept.sort(key=lambda pair: (pair[0], pair[1].published_at or pair[1].fetched_at), reverse=True)
+
         offset = (page - 1) * page_size
-        return Page(items=scored[offset : offset + page_size], page=page, page_size=page_size, total_count=len(scored))
+        page_items = [paper for _, paper in kept][offset : offset + page_size]
+        return Page(items=page_items, page=page, page_size=page_size, total_count=len(kept))
 
     def ai_frontier(self, page: int, page_size: int, excluded_ids: list[str] | None = None) -> Page:
         return self.recommend_ai_news(
@@ -931,3 +936,93 @@ def _json_string_list(value: str | None) -> list[str]:
 def _article_images(image_url: str | None, image_urls: list[str]) -> list[str]:
     values = [image_url, *image_urls] if image_url else image_urls
     return list(dict.fromkeys(value for value in values if value))
+
+
+NEWS_DECAY_LAMBDA = 0.04  # 指数衰减：24h≈38%，72h≈5.6%，7天≈0.1%
+_NEWS_DEDUP_THRESHOLD = 0.6
+_NEWS_DEDUP_PENALTY = 0.3
+_PAPER_DEDUP_THRESHOLD = 0.6
+_PAPER_DEDUP_PENALTY = 0.3
+
+
+def _rank_articles(articles: list[Article]) -> list[Article]:
+    """新闻精排：final_score = 质量分 × 时间衰减，再对同事件重复篇软去重降权。"""
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[float, Article]] = []
+    for article in articles:
+        quality = _article_quality_score(article)
+        decay = _time_decay(article.published_at or article.fetched_at, now)
+        scored.append((quality * decay, article))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+
+    # 软去重：与已入选的高分篇标题相似度超阈值时降权，降权后重新插入。
+    kept: list[tuple[float, Article]] = []
+    for score, article in scored:
+        for kept_score, kept_article in kept:
+            if _title_similarity(article.title, kept_article.title) >= _NEWS_DEDUP_THRESHOLD:
+                score *= _NEWS_DEDUP_PENALTY
+                break
+        kept.append((score, article))
+    kept.sort(key=lambda pair: pair[0], reverse=True)
+    return [article for _, article in kept]
+
+
+def _article_quality_score(article: Article) -> float:
+    score = 1.0
+    # 内容丰富度：正文越长越扎实，过短降权
+    content_len = len(article.content or "")
+    if content_len >= 400:
+        score += 2.0
+    elif content_len >= 120:
+        score += 1.0
+    elif content_len < 40:
+        score *= 0.6
+    # AI 信号加分（单人信息流的轻量个性化）
+    score += _ai_signal_hits(article.title, article.description) * 1.5
+    # 小幅元数据信号
+    if article.image_url:
+        score += 0.3
+    if article.published_at:
+        score += 0.2
+    return score
+
+
+def _ai_signal_hits(title: str, description: str) -> int:
+    text = f"{title} {description}".lower()
+    return sum(1 for signal in AI_NEWS_SIGNALS if signal.lower() in text)
+
+
+def _time_decay(iso_time: str | None, now: datetime) -> float:
+    if not iso_time:
+        return 0.0
+    parsed = _parse_iso(iso_time)
+    if not parsed:
+        return 0.0
+    hours = max((now - parsed).total_seconds() / 3600.0, 0.0)
+    return math.exp(-NEWS_DECAY_LAMBDA * hours)
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _title_similarity(a: str, b: str) -> float:
+    set_a = _char_bigrams(a)
+    set_b = _char_bigrams(b)
+    if not set_a or not set_b:
+        return 0.0
+    intersection = len(set_a & set_b)
+    return intersection / len(set_a | set_b)
+
+
+def _char_bigrams(text: str) -> set[str]:
+    cleaned = re.sub(r"\s+", "", text or "")
+    if len(cleaned) < 2:
+        return {cleaned} if cleaned else set()
+    return {cleaned[i : i + 2] for i in range(len(cleaned) - 1)}

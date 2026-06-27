@@ -17,6 +17,13 @@ from .fetchers import FetchError
 
 AI_ARXIV_CATEGORIES = ("cs.AI", "cs.CL", "cs.CV", "cs.LG", "cs.IR", "cs.NE", "cs.RO", "stat.ML")
 
+# 泛词消歧：关键词 -> 目标语境词。裸词命中但文本里无任一语境词时降权。
+# agent 限定 LLM/智能体语境，diffusion 限定图像生成语境，过滤同名噪声。
+KEYWORD_CONTEXT: dict[str, tuple[str, ...]] = {
+    "agent": ("llm", "language", "model", "instruct", "tool", "autonom", "reasoning", "planning", "gpt", "prompt"),
+    "diffusion": ("model", "image", "generation", "score-based", "text-to-image", "denois", "ddpm", "stable"),
+}
+
 
 @dataclass(frozen=True)
 class KeywordRule:
@@ -91,14 +98,17 @@ def score_paper(title: str, abstract: str, categories: list[str], rules: list[Ke
             return PaperMatch(matched_keywords=tuple(), score=-1)
         if total_hits > 0:
             matched.append(rule.display_name)
-            score += title_hits * 8 + abstract_hits * 3
+            # 软消歧：泛词（agent/diffusion）裸词命中但无目标语境词时降权，
+            # 过滤物理扩散 / RL agent / software agent 等噪声，不归零。
+            context_factor = _context_factor(rule.term, text)
+            score += int((title_hits * 8 + abstract_hits * 3) * context_factor)
             if rule.is_required:
                 score += 10
 
     if any(category in AI_ARXIV_CATEGORIES for category in categories):
         score += 5
     if _contains_recent_ai_signal(text):
-        score += 4
+        score += 8
 
     return PaperMatch(matched_keywords=tuple(dict.fromkeys(matched)), score=score)
 
@@ -295,10 +305,28 @@ def _count_matches(text: str, rule: KeywordRule) -> int:
     return text.lower().count(rule.term.lower())
 
 
+def _context_factor(term: str, text: str) -> float:
+    """泛词消歧：命中关键词后，若文本无对应语境词则降权，有则全分。"""
+    context_words = KEYWORD_CONTEXT.get(term.lower())
+    if not context_words:
+        return 1.0
+    lower = text.lower()
+    if any(word in lower for word in context_words):
+        return 1.0
+    return 0.2
+
+
 def _contains_recent_ai_signal(text: str) -> bool:
     signals = ("llm", "rag", "agent", "multimodal", "diffusion", "transformer", "大模型", "多模态")
     lower = text.lower()
-    return any(signal in lower for signal in signals)
+    for signal in signals:
+        if signal in KEYWORD_CONTEXT:
+            if signal in lower and _context_factor(signal, text) >= 1.0:
+                return True
+            continue
+        if signal in lower:
+            return True
+    return False
 
 
 def _paper_external_id(entry_id: str) -> str:
