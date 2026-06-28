@@ -322,7 +322,8 @@ class NewsStore:
             total_count = connection.execute(f"SELECT COUNT(*) AS total FROM articles a {where}", params).fetchone()["total"]
             # 取一个较大的候选集用于 Python 层重排（时间衰减 + 质量分 + 软去重），
             # 粗排仅按时间倒序，精排在内存里完成。
-            candidate_limit = min(total_count, max(page * page_size, 100))
+            # 确保分页时候选集足够大：取前几页所需 + 额外缓冲，避免高分被遗漏。
+            candidate_limit = min(total_count, max(page * page_size + 200, 300))
             rows = connection.execute(
                 f"""
                 SELECT
@@ -708,22 +709,25 @@ class NewsStore:
                 )
             )
 
-        # 相关度优先：按分数降序，再按时间兜底。
-        scored.sort(key=lambda pair: (pair[0], pair[1].published_at or pair[1].fetched_at), reverse=True)
-
-        # 软去重：arXiv 同工作多版本/重复标题，低分篇降权后重排。
-        kept: list[tuple[float, Paper]] = []
+        # 基于标题指纹的分组去重，复杂度降至 O(n)
+        grouped: dict[str, list[tuple[float, Paper]]] = defaultdict(list)
         for score, paper in scored:
-            for kept_score, kept_paper in kept:
-                if _title_similarity(paper.title, kept_paper.title) >= _PAPER_DEDUP_THRESHOLD:
-                    score *= _PAPER_DEDUP_PENALTY
-                    break
-            kept.append((score, paper))
-        kept.sort(key=lambda pair: (pair[0], pair[1].published_at or pair[1].fetched_at), reverse=True)
+            fingerprint = _title_fingerprint(paper.title)
+            grouped[fingerprint].append((score, paper))
+
+        result: list[tuple[float, Paper]] = []
+        for group in grouped.values():
+            group.sort(key=lambda pair: pair[0], reverse=True)
+            best_score, best_paper = group[0]
+            result.append((best_score, best_paper))
+            for score, paper in group[1:]:
+                result.append((score * _PAPER_DEDUP_PENALTY, paper))
+
+        result.sort(key=lambda pair: (pair[0], pair[1].published_at or pair[1].fetched_at), reverse=True)
 
         offset = (page - 1) * page_size
-        page_items = [paper for _, paper in kept][offset : offset + page_size]
-        return Page(items=page_items, page=page, page_size=page_size, total_count=len(kept))
+        page_items = [paper for _, paper in result][offset : offset + page_size]
+        return Page(items=page_items, page=page, page_size=page_size, total_count=len(result))
 
     def ai_frontier(self, page: int, page_size: int, excluded_ids: list[str] | None = None) -> Page:
         return self.recommend_ai_news(
@@ -946,7 +950,10 @@ _PAPER_DEDUP_PENALTY = 0.3
 
 
 def _rank_articles(articles: list[Article]) -> list[Article]:
-    """新闻精排：final_score = 质量分 × 时间衰减，再对同事件重复篇软去重降权。"""
+    """新闻精排：final_score = 质量分 × 时间衰减，再对同事件重复篇软去重降权。
+
+    优化后的去重使用标题指纹 + 分组只保留最高分，复杂度降至 O(n)。
+    """
     now = datetime.now(timezone.utc)
     scored: list[tuple[float, Article]] = []
     for article in articles:
@@ -955,16 +962,23 @@ def _rank_articles(articles: list[Article]) -> list[Article]:
         scored.append((quality * decay, article))
     scored.sort(key=lambda pair: pair[0], reverse=True)
 
-    # 软去重：与已入选的高分篇标题相似度超阈值时降权，降权后重新插入。
-    kept: list[tuple[float, Article]] = []
+    # 基于标准化标题指纹的分组去重，同组只保留最高分
+    grouped: dict[str, list[tuple[float, Article]]] = defaultdict(list)
     for score, article in scored:
-        for kept_score, kept_article in kept:
-            if _title_similarity(article.title, kept_article.title) >= _NEWS_DEDUP_THRESHOLD:
-                score *= _NEWS_DEDUP_PENALTY
-                break
-        kept.append((score, article))
-    kept.sort(key=lambda pair: pair[0], reverse=True)
-    return [article for _, article in kept]
+        fingerprint = _title_fingerprint(article.title)
+        grouped[fingerprint].append((score, article))
+
+    result: list[tuple[float, Article]] = []
+    for group in grouped.values():
+        group.sort(key=lambda pair: pair[0], reverse=True)
+        best_score, best_article = group[0]
+        result.append((best_score, best_article))
+        # 同组其余文章降权追加
+        for score, article in group[1:]:
+            result.append((score * _NEWS_DEDUP_PENALTY, article))
+
+    result.sort(key=lambda pair: pair[0], reverse=True)
+    return [article for _, article in result]
 
 
 def _article_quality_score(article: Article) -> float:
@@ -1013,12 +1027,33 @@ def _parse_iso(value: str) -> datetime | None:
 
 
 def _title_similarity(a: str, b: str) -> float:
+    """计算两个标题的相似度，基于字符 bigram（保留兼容性）。
+
+    新增 _title_fingerprint 用于快速分组去重，此函数仍可被外部调用。
+    """
     set_a = _char_bigrams(a)
     set_b = _char_bigrams(b)
     if not set_a or not set_b:
         return 0.0
     intersection = len(set_a & set_b)
     return intersection / len(set_a | set_b)
+
+
+def _title_fingerprint(text: str) -> str:
+    """生成标准化标题指纹，用于快速分组去重。
+
+    算法：
+    1. 提取中文字符和数字（过滤英文、标点和空格）
+    2. 保留前 8 个关键字符作为指纹
+    3. 如果中文字符不足，退回到前 6 个字符
+    """
+    # 提取中文字符和数字
+    chinese_and_digits = re.sub(r"[^一-鿿\d]", "", text or "")
+    if len(chinese_and_digits) >= 8:
+        return chinese_and_digits[:8]
+    # 中文字符不足，退回到 cleaned 前 6 个字符
+    cleaned = re.sub(r"\s+", "", text or "")
+    return cleaned[:6] if cleaned else ""
 
 
 def _char_bigrams(text: str) -> set[str]:
