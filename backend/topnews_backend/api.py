@@ -11,6 +11,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from . import images
 from .config import AppConfig
 from .fetchers import FetchError
 from .llm import LlmClient, LlmConfigError, LlmRequestError
@@ -106,12 +107,14 @@ class TopNewsApi:
                         image_url=fetched_image_url,
                     )
                     image = (fetched_image.data, fetched_image.mime_type)
+                image = self._maybe_downscale(("article", external_id), image, params)
                 return self.write_binary(request, HTTPStatus.OK, image[0], image[1])
             if method == "GET" and parsed.path.startswith("/v1/papers/") and parsed.path.endswith("/image"):
                 external_id = urllib.parse.unquote(parsed.path[len("/v1/papers/") : -len("/image")].rstrip("/"))
                 image = self.store.get_paper_image(external_id)
                 if not image:
                     return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "paper_image_not_found"})
+                image = self._maybe_downscale(("paper", external_id), image, params)
                 return self.write_binary(request, HTTPStatus.OK, image[0], image[1])
             if method == "GET" and parsed.path == "/v1/news":
                 page = self.store.list_articles(**self._page_args(params))
@@ -350,6 +353,25 @@ class TopNewsApi:
     def _slim(params: dict[str, list[str]]) -> bool:
         """fields=list 时列表返回瘦身负载；默认 full 兼容旧客户端。"""
         return str(TopNewsApi._first(params, "fields", "full")).lower() == "list"
+
+    @staticmethod
+    def _maybe_downscale(
+        cache_key: tuple[str, str],
+        image: tuple[bytes, str],
+        params: dict[str, list[str]],
+    ) -> tuple[bytes, str]:
+        """?w=336 时返回降采样 JPEG；没带 w、Pillow 缺失或原图已够小则原样返回。
+
+        列表缩略图只占 112x76dp，原图却常有几百 KB 到几 MB（详见 images.py）。
+        """
+        width = images.normalize_width(TopNewsApi._first(params, "w", ""))
+        if width is None:
+            return image
+        # 列表里的 image_url 自带 ?v=<指纹>，图片一变 v 就变，直接拿它当缓存版本号，
+        # 省掉每个请求对原图重新哈希；没有 v 时退化成用字节数区分。
+        version = TopNewsApi._first(params, "v", "") or str(len(image[0]))
+        variant = images.downscaled((*cache_key, version), image[0], image[1], width)
+        return variant or image
 
     @staticmethod
     def _page_to_dict(page: Page, slim: bool = False) -> dict[str, Any]:

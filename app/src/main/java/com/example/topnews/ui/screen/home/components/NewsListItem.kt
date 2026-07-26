@@ -17,6 +17,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -110,9 +111,10 @@ private fun NewsThumbnail(article: NewsArticle, imageUrl: String) {
             .clip(RoundedCornerShape(2.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
+        val thumbnailUrl = remember(imageUrl) { thumbnailRequestUrl(imageUrl) }
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data(imageUrl)
+                .data(thumbnailUrl)
                 // 按缩略图实际尺寸解码（约 112x76dp @3x），避免大图整幅解码
                 .size(THUMBNAIL_DECODE_WIDTH_PX, THUMBNAIL_DECODE_HEIGHT_PX)
                 .crossfade(true)
@@ -149,6 +151,19 @@ private fun NewsThumbnail(article: NewsArticle, imageUrl: String) {
             )
         }
     }
+}
+
+/**
+ * 列表缩略图向后端请求降采样版本。
+ *
+ * `.size()` 只限制解码尺寸，下载的仍是原图：一页「学术推荐」的 arXiv 配图合计约 9.7MB
+ * （均值 573KB、最大 3.9MB），而它只画在 112x76dp 上，弱网下会把列表接口的带宽挤光。
+ * 只对后端自己的 /image 端点加 w 参数；旧版后端会忽略未知查询参数，因此可安全下发。
+ */
+private fun thumbnailRequestUrl(imageUrl: String): String {
+    if (!imageUrl.contains("/image")) return imageUrl
+    val separator = if (imageUrl.contains('?')) "&" else "?"
+    return "$imageUrl${separator}w=$THUMBNAIL_DECODE_WIDTH_PX"
 }
 
 private fun isJunkArticleImageUrl(url: String): Boolean {

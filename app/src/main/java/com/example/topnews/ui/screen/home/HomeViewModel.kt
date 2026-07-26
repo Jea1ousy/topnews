@@ -114,10 +114,7 @@ class HomeViewModel : ViewModel() {
                         val nextArticles = if (keepCurrent) currentFeed.articles else newsPage.articles
                         currentFeed.copy(
                             articles = nextArticles,
-                            seenArticleIds = (currentFeed.seenArticleIds + nextArticles.map { article -> article.id })
-                                .toList()
-                                .takeLast(300)
-                                .toSet(),
+                            seenArticleIds = currentFeed.seenArticleIds.plusBounded(nextArticles),
                             isLoading = false,
                             isRefreshing = false,
                             isLoadingMore = false,
@@ -167,10 +164,7 @@ class HomeViewModel : ViewModel() {
                     updateFeed(category) { currentFeed ->
                         currentFeed.copy(
                             articles = currentFeed.articles + nextPageResult.articles,
-                            seenArticleIds = (currentFeed.seenArticleIds + nextPageResult.articles.map { article -> article.id })
-                                .toList()
-                                .takeLast(300)
-                                .toSet(),
+                            seenArticleIds = currentFeed.seenArticleIds.plusBounded(nextPageResult.articles),
                             isLoadingMore = false,
                             hasMore = nextPageResult.hasMore,
                             currentPage = nextPageResult.page,
@@ -202,20 +196,13 @@ class HomeViewModel : ViewModel() {
             val result = runCatching { repository.getArticleDetail(article) }
             detailRequestIds.remove(article.id)
             result.onSuccess { detail ->
+                if (detailLoadedIds.size >= MAX_TRACKED_DETAIL_IDS) detailLoadedIds.clear()
                 detailLoadedIds.add(article.id)
                 if (detail != null) {
                     _uiState.update { state ->
                         state.copy(
-                            feedsByCategory = state.feedsByCategory.mapValues { (_, feed) ->
-                                if (feed.articles.none { item -> item.id == article.id }) {
-                                    feed
-                                } else {
-                                    feed.copy(
-                                        articles = feed.articles.map { item ->
-                                            if (item.id == article.id) mergeArticleDetail(item, detail) else item
-                                        }
-                                    )
-                                }
+                            feedsByCategory = state.feedsByCategory.replaceArticle(article.id) { item ->
+                                mergeArticleDetail(item, detail)
                             }
                         )
                     }
@@ -261,12 +248,10 @@ class HomeViewModel : ViewModel() {
                 .onSuccess { summary ->
                     _uiState.update { state ->
                         state.copy(
-                            feedsByCategory = state.feedsByCategory.mapValues { (_, feed) ->
-                                feed.copy(
-                                    articles = feed.articles.map { item ->
-                                        if (item.id == article.id) item.copy(aiSummary = summary) else item
-                                    }
-                                )
+                            // 只重建真正包含这篇文章的分类：原实现无条件 map 了所有分类的所有文章，
+                            // 多分类都加载过之后一次 AI 总结要复制上千个 NewsArticle。
+                            feedsByCategory = state.feedsByCategory.replaceArticle(article.id) { item ->
+                                item.copy(aiSummary = summary)
                             },
                             aiSummaries = state.aiSummaries + (article.id to AiSummaryState(summary = summary))
                         )
@@ -389,8 +374,49 @@ class HomeViewModel : ViewModel() {
         }
     }
 
+    /** 只重建包含 [articleId] 的分类，其余分类原对象直接复用（Compose 也就不会重组它们）。 */
+    private fun Map<String, CategoryFeedState>.replaceArticle(
+        articleId: String,
+        transform: (NewsArticle) -> NewsArticle
+    ): Map<String, CategoryFeedState> {
+        var changed = false
+        val next = mapValues { (_, feed) ->
+            val index = feed.articles.indexOfFirst { item -> item.id == articleId }
+            if (index < 0) {
+                feed
+            } else {
+                changed = true
+                feed.copy(
+                    articles = feed.articles.toMutableList().apply {
+                        this[index] = transform(this[index])
+                    }
+                )
+            }
+        }
+        return if (changed) next else this
+    }
+
+    /** 保留最近 [MAX_SEEN_IDS] 个已读 id：原实现每次都 toList().takeLast().toSet() 重建三份集合。 */
+    private fun Set<String>.plusBounded(articles: List<NewsArticle>): Set<String> {
+        if (articles.isEmpty()) return this
+        val merged = LinkedHashSet<String>(size + articles.size)
+        merged.addAll(this)
+        articles.forEach { article -> merged.add(article.id) }
+        var overflow = merged.size - MAX_SEEN_IDS
+        if (overflow > 0) {
+            val iterator = merged.iterator()
+            while (overflow > 0 && iterator.hasNext()) {
+                iterator.next()
+                iterator.remove()
+                overflow--
+            }
+        }
+        return merged
+    }
+
     private fun currentTimeText(): String {
-        return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        // viewModelScope 在主线程单线程执行，复用一个 formatter 即可（SimpleDateFormat 非线程安全）
+        return clockFormatter.format(Date())
     }
 
     private fun updateFeed(
@@ -407,5 +433,9 @@ class HomeViewModel : ViewModel() {
     companion object {
         private const val DEFAULT_CATEGORY = "推荐"
         private const val ACADEMIC_CATEGORY = "学术推荐"
+        private const val MAX_SEEN_IDS = 300
+        private const val MAX_TRACKED_DETAIL_IDS = 500
+
+        private val clockFormatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     }
 }

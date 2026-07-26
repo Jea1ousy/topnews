@@ -372,6 +372,9 @@ class ArticleDetailParser(HTMLParser):
         self._ignore_depth = 0
         self._capture_tag: str | None = None
         self._capture_text: list[str] = []
+        self._anchor_depth = 0
+        self._capture_anchor_chars = 0
+        self._capture_anchor_count = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lower_tag = tag.lower()
@@ -396,14 +399,24 @@ class ArticleDetailParser(HTMLParser):
                 if added and self._capture_tag:
                     self.html_blocks.append(f'<img src="{html.escape(image_url, quote=True)}" />')
             return
+        if lower_tag == "a":
+            if self._capture_tag:
+                self._anchor_depth += 1
+                self._capture_anchor_count += 1
+            return
         if lower_tag in ARTICLE_DETAIL_TEXT_TAGS and not self._capture_tag:
             self._capture_tag = lower_tag
             self._capture_text = []
+            self._anchor_depth = 0
+            self._capture_anchor_chars = 0
+            self._capture_anchor_count = 0
 
     def handle_data(self, data: str) -> None:
         if self._ignore_depth or not self._capture_tag:
             return
         self._capture_text.append(data)
+        if self._anchor_depth:
+            self._capture_anchor_chars += len(data.strip())
 
     def handle_endtag(self, tag: str) -> None:
         lower_tag = tag.lower()
@@ -412,14 +425,33 @@ class ArticleDetailParser(HTMLParser):
             return
         if self._ignore_depth:
             return
+        if lower_tag == "a":
+            if self._anchor_depth:
+                self._anchor_depth -= 1
+            return
         if self._capture_tag == lower_tag:
             text = _clean_inline_text("".join(self._capture_text))
-            if _is_article_text_block(text, lower_tag):
+            if _is_article_text_block(text, lower_tag) and not self._looks_like_navigation(text):
                 self.text_blocks.append(text)
                 html_tag = "p" if lower_tag in {"p", "li"} else lower_tag
                 self.html_blocks.append(f"<{html_tag}>{html.escape(text)}</{html_tag}>")
             self._capture_tag = None
             self._capture_text = []
+            self._anchor_depth = 0
+            self._capture_anchor_chars = 0
+            self._capture_anchor_count = 0
+
+    def _looks_like_navigation(self, text: str) -> bool:
+        """链接密度启发式：块里的字几乎都来自 <a>，且链接不止一两个 → 导航/推荐栏。
+
+        36氪 这类站点的顶栏不用 <nav>，而是一堆 <a> 塞在 div 里，
+        单看标签名过滤不掉，抽出来的正文会以
+        "36氪Auto数字时氪未来消费智能涌现…" 这样的导航串开头。
+        正文里的单个内链不会被误杀（要求 >=2 个链接，且锚文本占比够高）。
+        """
+        if not text or self._capture_anchor_count < ARTICLE_NAV_MIN_ANCHORS:
+            return False
+        return self._capture_anchor_chars >= len(text) * ARTICLE_NAV_LINK_DENSITY
 
     def _add_image(self, url: str) -> bool:
         image_url = _absolute_image_url(url, self.base_url)
@@ -801,6 +833,10 @@ ARTICLE_DETAIL_IGNORED_TAGS = {
     "form",
     "button",
 }
+
+# 导航块判定：至少 2 个 <a>，且 60% 以上的字符来自锚文本
+ARTICLE_NAV_MIN_ANCHORS = 2
+ARTICLE_NAV_LINK_DENSITY = 0.6
 
 ARTICLE_DETAIL_JUNK_TEXT = {
     "copyright",

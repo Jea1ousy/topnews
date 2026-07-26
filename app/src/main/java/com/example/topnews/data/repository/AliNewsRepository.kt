@@ -4,13 +4,12 @@ import com.example.topnews.BuildConfig
 import com.example.topnews.data.remote.dto.AliChannelDto
 import com.example.topnews.data.remote.dto.AliNewsDto
 import com.example.topnews.data.remote.NewsApi
+import com.example.topnews.data.remote.SharedHttp
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.domain.model.NewsPage
 import com.example.topnews.domain.repository.NewsRepository
-import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
-import java.util.concurrent.TimeUnit
 
 class AliNewsRepository(
     private val appCode: String = BuildConfig.ALI_NEWS_APPCODE,
@@ -93,15 +92,9 @@ class AliNewsRepository(
 
     companion object {
         private fun createApi(baseUrl: String): NewsApi {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .writeTimeout(20, TimeUnit.SECONDS)
-                .build()
-
             return Retrofit.Builder()
                 .baseUrl(baseUrl.withTrailingSlash())
-                .client(client)
+                .client(SharedHttp.withTimeouts(connectSeconds = 15, readSeconds = 20))
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()
                 .create(NewsApi::class.java)

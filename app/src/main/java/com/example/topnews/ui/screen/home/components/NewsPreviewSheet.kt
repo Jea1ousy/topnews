@@ -675,7 +675,7 @@ private fun PreviewImage(
 ) {
     val imageAspectRatioState = remember(imageUrl) {
         // 同一图片的宽高比进程内缓存：二次展示首帧即正确比例，正文不再跳动
-        mutableFloatStateOf(imageAspectRatioCache[imageUrl] ?: DEFAULT_IMAGE_ASPECT_RATIO)
+        mutableFloatStateOf(cachedAspectRatio(imageUrl) ?: DEFAULT_IMAGE_ASPECT_RATIO)
     }
     Box(
         modifier = modifier
@@ -694,7 +694,7 @@ private fun PreviewImage(
                 if (size.width > 0f && size.height > 0f) {
                     val ratio = (size.width / size.height)
                         .coerceIn(MIN_IMAGE_ASPECT_RATIO, MAX_IMAGE_ASPECT_RATIO)
-                    imageAspectRatioCache[imageUrl] = ratio
+                    cacheAspectRatio(imageUrl, ratio)
                     imageAspectRatioState.floatValue = ratio
                 }
             }
@@ -1126,7 +1126,26 @@ private fun splitLongParagraph(paragraph: String): List<String> {
     return paragraphs
 }
 
-private val imageAspectRatioCache = HashMap<String, Float>()
+/**
+ * 图片宽高比缓存：有界 LRU。
+ *
+ * 原实现是普通 HashMap，长会话里翻过的每张图都会永久留一条；这里限 256 条按访问顺序淘汰。
+ * onSuccess 回调在主线程、composition 读取也在主线程，但 Coil 的回调线程不作保证，故加锁。
+ */
+private val imageAspectRatioCache = object : LinkedHashMap<String, Float>(64, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Float>): Boolean {
+        return size > MAX_ASPECT_RATIO_CACHE_ENTRIES
+    }
+}
+
+private const val MAX_ASPECT_RATIO_CACHE_ENTRIES = 256
+
+private fun cachedAspectRatio(imageUrl: String): Float? =
+    synchronized(imageAspectRatioCache) { imageAspectRatioCache[imageUrl] }
+
+private fun cacheAspectRatio(imageUrl: String, ratio: Float) {
+    synchronized(imageAspectRatioCache) { imageAspectRatioCache[imageUrl] = ratio }
+}
 
 private const val PREVIEW_TOP_FRACTION = 0.38f
 private const val EXPAND_THRESHOLD_FRACTION = 0.30f

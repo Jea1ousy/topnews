@@ -2,6 +2,7 @@ package com.example.topnews.data.repository
 
 import android.os.Build
 import com.example.topnews.BuildConfig
+import com.example.topnews.data.remote.SharedHttp
 import com.example.topnews.data.remote.TopNewsBackendApi
 import com.example.topnews.data.remote.dto.AddAcademicKeywordRequest
 import com.example.topnews.data.remote.dto.BackendAcademicKeywordDto
@@ -13,7 +14,8 @@ import com.example.topnews.domain.model.AcademicKeyword
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.domain.model.NewsPage
 import com.example.topnews.domain.repository.NewsRepository
-import okhttp3.OkHttpClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.net.URI
@@ -55,9 +57,12 @@ class TopNewsBackendRepository(
     suspend fun getArticleDetail(article: NewsArticle): NewsArticle? {
         require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
         return if (article.channelName == ACADEMIC_CATEGORY) {
-            api.getPaperDetail(article.id).toNewsArticle()
+            val dto = api.getPaperDetail(article.id)
+            withContext(Dispatchers.Default) { dto.toNewsArticle() }
         } else {
-            api.getArticleDetail(article.id).toNewsArticle()
+            val dto = api.getArticleDetail(article.id)
+            // 全文里的图片 URL 重写是整串 String.replace，长文别放主线程
+            withContext(Dispatchers.Default) { dto.toNewsArticle() }
         }
     }
 
@@ -113,11 +118,26 @@ class TopNewsBackendRepository(
         category: String,
         exclude: String?
     ): NewsPage {
+        // Retrofit 的 suspend 函数会在调用方的调度器上恢复（这里是 viewModelScope=Main），
+        // 所以 DTO→domain 的映射（日期解析、URL 拼接、HTML 图片重写）默认全落在主线程。
+        // 20 条一页时这是每次翻页/刷新都要付的固定主线程开销，统一挪到 Default。
         return when (category) {
-            "AI前沿" -> api.getAiFrontier(page = page, pageSize = pageSize, exclude = exclude).toNewsPage(page, pageSize)
-            "学术推荐" -> api.getPaperRecommendations(page = page, pageSize = pageSize, exclude = exclude).toNewsPage(page, pageSize)
-            "推荐", "关注", "热榜" -> api.getRecommendations(page = page, pageSize = pageSize, exclude = exclude).toNewsPage(page, pageSize)
-            else -> api.getNews(page = page, pageSize = pageSize, category = category, exclude = exclude).toNewsPage(page, pageSize)
+            "AI前沿" -> {
+                val response = api.getAiFrontier(page = page, pageSize = pageSize, exclude = exclude)
+                withContext(Dispatchers.Default) { response.toNewsPage(page, pageSize) }
+            }
+            "学术推荐" -> {
+                val response = api.getPaperRecommendations(page = page, pageSize = pageSize, exclude = exclude)
+                withContext(Dispatchers.Default) { response.toNewsPage(page, pageSize) }
+            }
+            "推荐", "关注", "热榜" -> {
+                val response = api.getRecommendations(page = page, pageSize = pageSize, exclude = exclude)
+                withContext(Dispatchers.Default) { response.toNewsPage(page, pageSize) }
+            }
+            else -> {
+                val response = api.getNews(page = page, pageSize = pageSize, category = category, exclude = exclude)
+                withContext(Dispatchers.Default) { response.toNewsPage(page, pageSize) }
+            }
         }
     }
 
@@ -302,15 +322,9 @@ class TopNewsBackendRepository(
         }
 
         private fun createApi(baseUrl: String): TopNewsBackendApi {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .writeTimeout(60, TimeUnit.SECONDS)
-                .build()
-
             return Retrofit.Builder()
                 .baseUrl(baseUrl.withTrailingSlash())
-                .client(client)
+                .client(SharedHttp.apiClient)
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()
                 .create(TopNewsBackendApi::class.java)
@@ -342,20 +356,17 @@ class TopNewsBackendRepository(
         private fun String.toDateOrNull(): Date? {
             val value = trim()
             if (value.isEmpty()) return null
-            return ISO_DATE_PATTERNS.firstNotNullOfOrNull { pattern ->
-                runCatching {
-                    SimpleDateFormat(pattern, Locale.US).apply {
-                        timeZone = TimeZone.getTimeZone("UTC")
-                    }.parse(value)
-                }.getOrNull()
+            return isoParsers.get()!!.firstNotNullOfOrNull { parser ->
+                runCatching { parser.parse(value) }.getOrNull()
             }
         }
 
         private fun Date.formatForNews(): String {
-            val currentYear = Calendar.getInstance().get(Calendar.YEAR)
-            val itemYear = Calendar.getInstance().apply { time = this@formatForNews }.get(Calendar.YEAR)
-            val pattern = if (itemYear == currentYear) "MM-dd" else "yyyy-MM-dd"
-            return SimpleDateFormat(pattern, Locale.getDefault()).format(this)
+            val calendar = calendarHolder.get()!!
+            val currentYear = calendar.apply { timeInMillis = System.currentTimeMillis() }.get(Calendar.YEAR)
+            val itemYear = calendar.apply { time = this@formatForNews }.get(Calendar.YEAR)
+            val formatters = newsDateFormatters.get()!!
+            return (if (itemYear == currentYear) formatters.first else formatters.second).format(this)
         }
 
         private val ISO_DATE_PATTERNS = listOf(
@@ -364,5 +375,22 @@ class TopNewsBackendRepository(
             "yyyy-MM-dd'T'HH:mm:ssXXX",
             "yyyy-MM-dd HH:mm:ss"
         )
+
+        // 原先每篇文章都要 new 最多 4 个 SimpleDateFormat（外加 2 个 Calendar）才格式化出一个
+        // "8分钟前"。SimpleDateFormat 非线程安全，所以按线程各持一份而不是简单单例。
+        private val isoParsers = ThreadLocal.withInitial {
+            ISO_DATE_PATTERNS.map { pattern ->
+                SimpleDateFormat(pattern, Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }
+            }
+        }
+
+        private val newsDateFormatters = ThreadLocal.withInitial {
+            SimpleDateFormat("MM-dd", Locale.getDefault()) to
+                SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        }
+
+        private val calendarHolder = ThreadLocal.withInitial { Calendar.getInstance() }
     }
 }

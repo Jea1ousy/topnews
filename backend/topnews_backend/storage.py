@@ -383,7 +383,12 @@ class NewsStore:
                         image_url=excluded.image_url,
                         image_urls=excluded.image_urls,
                         published_at=COALESCE(excluded.published_at, articles.published_at),
-                        fetched_at=excluded.fetched_at
+                        -- 保留首次入库时间，不要每轮抓取都刷新。
+                        -- 时间衰减与保留策略都走 COALESCE(published_at, fetched_at)，而 portal 源
+                        -- （36氪快讯/新华社首页等）的 published_at 恒为 NULL；一旦每轮 ingest 都把
+                        -- fetched_at 改成 now，这些文章会永远处于"刚发布"状态：既永久霸占推荐首页，
+                        -- 也永远不会被 30 天保留任务清掉。取最早值即可同时修好这两件事。
+                        fetched_at=MIN(COALESCE(articles.fetched_at, excluded.fetched_at), excluded.fetched_at)
                     """,
                     (
                         article.external_id,
