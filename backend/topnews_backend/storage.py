@@ -9,12 +9,21 @@ import time
 import urllib.parse
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Iterator
-from .academic import KeywordRule, RawPaper, paper_json, paper_list, parse_keyword_rule, score_paper
+from .academic import (
+    KeywordRule,
+    RawPaper,
+    paper_base_score,
+    paper_json,
+    paper_list,
+    parse_keyword_rule,
+    rule_hit_contribution,
+    score_paper,
+)
 from .fetchers import RawArticle
 from .summary import build_summary
 
@@ -110,7 +119,8 @@ class Page:
 class _PaperRecommendationCache:
     key: tuple[object, ...]
     created_at: float
-    items: list[Paper]
+    # 排好序的 (external_id, str(id), score, matched_keywords)
+    entries: list[tuple[str, str, int, tuple[str, ...]]]
 
 
 @dataclass
@@ -144,6 +154,8 @@ _PAPER_SELECT_COLUMNS = """
 
 _PAPER_RECOMMENDATION_CACHE_TTL_SECONDS = 600.0
 _NEWS_RECOMMENDATION_CACHE_TTL_SECONDS = 90.0
+_PAPER_CANDIDATE_WINDOW_DAYS = 30
+_PAPER_CANDIDATE_MIN = 50
 
 
 class NewsStore:
@@ -258,8 +270,26 @@ class NewsStore:
             _ensure_column(connection, "papers", "figure_checked_at", "TEXT")
             _ensure_column(connection, "papers", "ai_summary", "TEXT")
             _ensure_column(connection, "papers", "ai_summary_at", "TEXT")
+            # 入库时算好的派生列：规则无关基础分 + 标题指纹
+            _ensure_column(connection, "papers", "base_score", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "papers", "title_fingerprint", "TEXT NOT NULL DEFAULT ''")
+            # 关键词命中预计算表：论文入库时/新增关键词时增量维护，
+            # 请求期不再对全库论文跑正则打分
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS paper_rule_hits (
+                    paper_id INTEGER NOT NULL,
+                    rule_id INTEGER NOT NULL,
+                    total_hits INTEGER NOT NULL,
+                    contribution INTEGER NOT NULL,
+                    PRIMARY KEY (paper_id, rule_id)
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_paper_rule_hits_rule ON paper_rule_hits(rule_id)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_keywords_enabled ON academic_keywords(enabled)")
+            self._backfill_paper_derived_columns(connection)
 
     def _backfill_article_derived_columns(self, connection: sqlite3.Connection) -> None:
         """旧库迁移：为存量行补齐派生列（只在指纹为空的行上执行一次）。"""
@@ -287,6 +317,70 @@ class NewsStore:
                 """,
                 (quality, is_ai, content_len, fingerprint, row["id"]),
             )
+
+    def _enabled_rules_with_ids(self, connection: sqlite3.Connection) -> list[tuple[int, KeywordRule]]:
+        rows = connection.execute(
+            "SELECT * FROM academic_keywords WHERE enabled = 1 ORDER BY id ASC"
+        ).fetchall()
+        return [
+            (
+                row["id"],
+                KeywordRule(
+                    raw_rule=row["raw_rule"],
+                    term=row["term"],
+                    display_name=row["display_name"],
+                    is_required=bool(row["is_required"]),
+                    is_excluded=bool(row["is_excluded"]),
+                    is_regex=bool(row["is_regex"]),
+                ),
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _store_rule_hits(
+        connection: sqlite3.Connection,
+        paper_id: int,
+        title: str,
+        abstract: str,
+        rules_with_ids: list[tuple[int, KeywordRule]],
+    ) -> None:
+        """重算并写入一篇论文对给定规则的命中。0 命中不落行（缺行即 0）。"""
+        for rule_id, rule in rules_with_ids:
+            total_hits, contribution = rule_hit_contribution(title, abstract, rule)
+            if total_hits > 0:
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO paper_rule_hits (paper_id, rule_id, total_hits, contribution)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (paper_id, rule_id, total_hits, contribution),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM paper_rule_hits WHERE paper_id = ? AND rule_id = ?",
+                    (paper_id, rule_id),
+                )
+
+    def _backfill_paper_derived_columns(self, connection: sqlite3.Connection) -> None:
+        """旧库迁移：为存量论文补基础分/指纹并预计算关键词命中。
+
+        只在指纹为空的行上执行，一次性把原先请求期全表打分的代价付掉。
+        """
+        rows = connection.execute(
+            "SELECT id, title, abstract, categories FROM papers WHERE title_fingerprint = ''"
+        ).fetchall()
+        if not rows:
+            return
+        rules_with_ids = self._enabled_rules_with_ids(connection)
+        for row in rows:
+            base = paper_base_score(row["title"], row["abstract"], paper_list(row["categories"]))
+            fingerprint = _title_fingerprint(row["title"]) or "-"
+            connection.execute(
+                "UPDATE papers SET base_score = ?, title_fingerprint = ? WHERE id = ?",
+                (base, fingerprint, row["id"]),
+            )
+            self._store_rule_hits(connection, row["id"], row["title"], row["abstract"], rules_with_ids)
 
     def existing_external_ids(self, external_ids: list[str]) -> set[str]:
         """返回给定 external_id 中已入库的子集（用于增量丰富跳过详情抓取）。"""
@@ -589,6 +683,17 @@ class NewsStore:
                 "SELECT * FROM academic_keywords WHERE raw_rule = ?",
                 (rule.raw_rule,),
             ).fetchone()
+            # 为这条（新增或重新启用的）规则回填存量论文的命中。
+            # 低频操作，一次 O(全库)，之后请求期永远免费。
+            paper_rows = connection.execute("SELECT id, title, abstract FROM papers").fetchall()
+            for paper_row in paper_rows:
+                self._store_rule_hits(
+                    connection,
+                    paper_row["id"],
+                    paper_row["title"],
+                    paper_row["abstract"],
+                    [(row["id"], rule)],
+                )
         self.invalidate_paper_recommendation_cache()
         return _row_to_keyword(row)
 
@@ -713,18 +818,24 @@ class NewsStore:
         now = datetime.now(timezone.utc).isoformat()
         changed = 0
         with self.connect() as connection:
+            rules_with_ids = self._enabled_rules_with_ids(connection)
             for paper in papers:
+                base = paper_base_score(paper.title, paper.abstract, list(paper.categories))
+                fingerprint = _title_fingerprint(paper.title) or "-"
                 connection.execute(
                     """
                     INSERT INTO papers (
                         external_id, title, authors, abstract, source, url, pdf_url,
-                        categories, published_at, updated_at, fetched_at
+                        categories, published_at, updated_at, fetched_at,
+                        base_score, title_fingerprint
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(external_id) DO UPDATE SET
                         title=excluded.title,
                         authors=excluded.authors,
                         abstract=excluded.abstract,
+                        base_score=excluded.base_score,
+                        title_fingerprint=excluded.title_fingerprint,
                         ai_summary=CASE
                             WHEN excluded.title IS NOT papers.title
                               OR excluded.abstract IS NOT papers.abstract THEN NULL
@@ -755,8 +866,17 @@ class NewsStore:
                         paper.published_at,
                         paper.updated_at,
                         now,
+                        base,
+                        fingerprint,
                     ),
                 )
+                paper_row = connection.execute(
+                    "SELECT id FROM papers WHERE external_id = ?", (paper.external_id,)
+                ).fetchone()
+                if paper_row:
+                    self._store_rule_hits(
+                        connection, paper_row["id"], paper.title, paper.abstract, rules_with_ids
+                    )
                 changed += 1
         self.invalidate_paper_recommendation_cache()
         return changed
@@ -857,9 +977,15 @@ class NewsStore:
         use_keywords: bool = True,
         force_refresh: bool = False,
     ) -> Page:
+        """论文推荐：命中与基础分入库时已算好，请求期只做
+        「30 天窗口候选 → 命中表组装 → 指纹去重排序」。
+
+        与旧版 score_paper 全表打分语义等价；仅搜索词（q）因无预存命中
+        而对窗口内候选现场打分。
+        """
         rules = self.keyword_rules() if use_keywords else []
-        if query:
-            rules.append(parse_keyword_rule(query))
+        query_rule = parse_keyword_rule(query) if query else None
+        all_rules = rules + ([query_rule] if query_rule else [])
 
         page = max(page, 1)
         page_size = min(max(page_size, 1), 100)
@@ -876,7 +1002,7 @@ class NewsStore:
                     rule.is_excluded,
                     rule.is_regex,
                 )
-                for rule in rules
+                for rule in all_rules
             ),
         )
         now = time.monotonic()
@@ -888,87 +1014,172 @@ class NewsStore:
                     and cache.key == cache_key
                     and now - cache.created_at <= _PAPER_RECOMMENDATION_CACHE_TTL_SECONDS
                 ):
-                    return _paper_page_from_items(cache.items, page, page_size, excluded_ids)
+                    return self._paper_page_from_entries(cache.entries, page, page_size, excluded_ids)
 
-        clauses: list[str] = []
-        params: list[str] = []
+        select_text = ", p.title, p.abstract" if query_rule else ""
+        clauses = ["COALESCE(p.published_at, p.fetched_at) >= ?"]
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=_PAPER_CANDIDATE_WINDOW_DAYS)).isoformat()
+        params: list[str] = [cutoff]
         if category:
             clauses.append("p.categories LIKE ?")
             params.append(f"%{category}%")
-        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        where = "WHERE " + " AND ".join(clauses)
 
         with self.connect() as connection:
+            rules_with_ids = self._enabled_rules_with_ids(connection) if use_keywords else []
             rows = connection.execute(
                 f"""
-                SELECT {_PAPER_SELECT_COLUMNS}
+                SELECT p.id, p.external_id, p.base_score, p.title_fingerprint,
+                       p.published_at, p.fetched_at{select_text}
                 FROM papers p
                 {where}
                 ORDER BY COALESCE(p.published_at, p.fetched_at) DESC, p.id DESC
                 """,
                 params,
             ).fetchall()
+            if len(rows) < _PAPER_CANDIDATE_MIN:
+                # 兜底：窗口内候选过少（新库/抓取停滞）时放宽到最近 1000 篇
+                fallback_where = "WHERE p.categories LIKE ?" if category else ""
+                fallback_params = [f"%{category}%"] if category else []
+                rows = connection.execute(
+                    f"""
+                    SELECT p.id, p.external_id, p.base_score, p.title_fingerprint,
+                           p.published_at, p.fetched_at{select_text}
+                    FROM papers p
+                    {fallback_where}
+                    ORDER BY COALESCE(p.published_at, p.fetched_at) DESC, p.id DESC
+                    LIMIT 1000
+                    """,
+                    fallback_params,
+                ).fetchall()
+            enabled_rule_ids = [rule_id for rule_id, _ in rules_with_ids]
+            hits_by_paper: dict[int, dict[int, tuple[int, int]]] = defaultdict(dict)
+            if enabled_rule_ids:
+                placeholders = ", ".join("?" for _ in enabled_rule_ids)
+                hit_rows = connection.execute(
+                    f"""
+                    SELECT paper_id, rule_id, total_hits, contribution
+                    FROM paper_rule_hits
+                    WHERE rule_id IN ({placeholders})
+                    """,
+                    enabled_rule_ids,
+                ).fetchall()
+                for hit in hit_rows:
+                    hits_by_paper[hit["paper_id"]][hit["rule_id"]] = (hit["total_hits"], hit["contribution"])
 
-        scored: list[tuple[float, Paper]] = []
-        has_positive_rules = any(not rule.is_excluded for rule in rules)
+        has_positive_rules = any(not rule.is_excluded for rule in all_rules)
+        scored: list[tuple[int, str, sqlite3.Row, tuple[str, ...]]] = []
         for row in rows:
-            paper = _row_to_paper(row)
-            match = score_paper(paper.title, paper.abstract, paper.categories, rules)
-            # 有规则时只保留正分论文（命中且未被排除规则判负）。
-            if rules and match.score <= 0:
+            paper_hits = hits_by_paper.get(row["id"], {})
+            matched: list[str] = []
+            score = 0
+            dropped = False
+            for rule_id, rule in rules_with_ids:
+                total_hits, contribution = paper_hits.get(rule_id, (0, 0))
+                if rule.is_excluded and total_hits > 0:
+                    dropped = True
+                    break
+                if rule.is_required and total_hits == 0:
+                    dropped = True
+                    break
+                if total_hits > 0:
+                    matched.append(rule.display_name)
+                    score += contribution
+                    if rule.is_required:
+                        score += 10
+            if dropped:
                 continue
-            if has_positive_rules and not match.matched_keywords:
-                continue
-            scored.append(
-                (
-                    float(match.score),
-                    Paper(
-                        id=paper.id,
-                        external_id=paper.external_id,
-                        title=paper.title,
-                        authors=paper.authors,
-                        abstract=paper.abstract,
-                        source=paper.source,
-                        url=paper.url,
-                        pdf_url=paper.pdf_url,
-                        image_url=paper.image_url,
-                        image_caption=paper.image_caption,
-                        image_cached=paper.image_cached,
-                        categories=paper.categories,
-                        published_at=paper.published_at,
-                        updated_at=paper.updated_at,
-                        fetched_at=paper.fetched_at,
-                        figure_checked_at=paper.figure_checked_at,
-                        ai_summary=paper.ai_summary,
-                        matched_keywords=list(match.matched_keywords),
-                        score=match.score,
-                    ),
+            if query_rule:
+                # 搜索词无预存命中：仅对窗口内候选现场计算
+                q_hits, q_contribution = rule_hit_contribution(
+                    row["title"], row["abstract"], query_rule
                 )
-            )
+                if query_rule.is_excluded and q_hits > 0:
+                    continue
+                if query_rule.is_required and q_hits == 0:
+                    continue
+                if q_hits > 0:
+                    matched.append(query_rule.display_name)
+                    score += q_contribution
+                    if query_rule.is_required:
+                        score += 10
+            score += row["base_score"]
+            if all_rules and score <= 0:
+                continue
+            if has_positive_rules and not matched:
+                continue
+            scored.append((score, row["title_fingerprint"] or "-", row, tuple(dict.fromkeys(matched))))
 
-        # 基于标题指纹的分组去重，复杂度降至 O(n)
-        grouped: dict[str, list[tuple[float, Paper]]] = defaultdict(list)
-        for score, paper in scored:
-            fingerprint = _title_fingerprint(paper.title)
-            grouped[fingerprint].append((score, paper))
+        # 指纹分组软去重：同组保留最高分，其余降权
+        scored.sort(key=lambda item: item[0], reverse=True)
+        grouped: dict[str, list[tuple[float, sqlite3.Row, tuple[str, ...], int]]] = defaultdict(list)
+        for score, fingerprint, row, matched in scored:
+            grouped[fingerprint].append((float(score), row, matched, score))
 
-        result: list[tuple[float, Paper]] = []
+        result: list[tuple[float, sqlite3.Row, tuple[str, ...], int]] = []
         for group in grouped.values():
-            group.sort(key=lambda pair: pair[0], reverse=True)
-            best_score, best_paper = group[0]
-            result.append((best_score, best_paper))
-            for score, paper in group[1:]:
-                result.append((score * _PAPER_DEDUP_PENALTY, paper))
+            result.append(group[0])
+            for weighted, row, matched, raw_score in group[1:]:
+                result.append((weighted * _PAPER_DEDUP_PENALTY, row, matched, raw_score))
 
-        result.sort(key=lambda pair: (pair[0], pair[1].published_at or pair[1].fetched_at), reverse=True)
+        result.sort(
+            key=lambda item: (item[0], item[1]["published_at"] or item[1]["fetched_at"]),
+            reverse=True,
+        )
 
-        items = [paper for _, paper in result]
+        entries = [
+            (row["external_id"], str(row["id"]), raw_score, matched)
+            for _, row, matched, raw_score in result
+        ]
         with self._paper_recommendation_cache_lock:
             self._paper_recommendation_cache = _PaperRecommendationCache(
                 key=cache_key,
                 created_at=now,
-                items=items,
+                entries=entries,
             )
-        return _paper_page_from_items(items, page, page_size, excluded_ids)
+        return self._paper_page_from_entries(entries, page, page_size, excluded_ids)
+
+    def _paper_page_from_entries(
+        self,
+        entries: list[tuple[str, str, int, tuple[str, ...]]],
+        page: int,
+        page_size: int,
+        excluded_ids: list[str] | None,
+    ) -> Page:
+        excluded = set(excluded_ids or [])
+        if excluded:
+            filtered = [
+                entry
+                for entry in entries
+                if entry[0] not in excluded and entry[1] not in excluded
+            ]
+        else:
+            filtered = entries
+        offset = (page - 1) * page_size
+        page_entries = filtered[offset : offset + page_size]
+        papers = self._papers_by_external_ids([entry[0] for entry in page_entries])
+        by_id = {paper.external_id: paper for paper in papers}
+        items: list[Article | Paper] = []
+        for external_id, _, score, matched in page_entries:
+            paper = by_id.get(external_id)
+            if paper:
+                items.append(replace(paper, matched_keywords=list(matched), score=score))
+        return Page(items=items, page=page, page_size=page_size, total_count=len(filtered))
+
+    def _papers_by_external_ids(self, external_ids: list[str]) -> list[Paper]:
+        if not external_ids:
+            return []
+        placeholders = ", ".join("?" for _ in external_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT {_PAPER_SELECT_COLUMNS}
+                FROM papers p
+                WHERE p.external_id IN ({placeholders})
+                """,
+                external_ids,
+            ).fetchall()
+        return [_row_to_paper(row) for row in rows]
 
     def ai_frontier(self, page: int, page_size: int, excluded_ids: list[str] | None = None) -> Page:
         return self.recommend_ai_news(
@@ -1208,30 +1419,6 @@ def _interleave(first: list[Article | Paper], second: list[Article | Paper]) -> 
         if index < len(second):
             combined.append(second[index])
     return combined
-
-
-def _paper_page_from_items(
-    items: list[Paper],
-    page: int,
-    page_size: int,
-    excluded_ids: list[str] | None,
-) -> Page:
-    excluded = set(excluded_ids or [])
-    if excluded:
-        filtered = [
-            paper
-            for paper in items
-            if paper.external_id not in excluded and str(paper.id) not in excluded
-        ]
-    else:
-        filtered = items
-    offset = (page - 1) * page_size
-    return Page(
-        items=filtered[offset : offset + page_size],
-        page=page,
-        page_size=page_size,
-        total_count=len(filtered),
-    )
 
 
 def _row_to_article(row: sqlite3.Row) -> Article:

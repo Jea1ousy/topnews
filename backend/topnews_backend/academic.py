@@ -84,6 +84,37 @@ def parse_keyword_rule(raw_rule: str) -> KeywordRule:
     )
 
 
+def paper_base_score(title: str, abstract: str, categories: list[str]) -> int:
+    """规则无关的基础分：arXiv 分类加分 + AI 信号加分（含泛词消歧）。
+
+    与 score_paper 尾部两个加分项完全一致，入库时算一次存列。
+    """
+    text = f"{title}\n{abstract}"
+    score = 0
+    if any(category in AI_ARXIV_CATEGORIES for category in categories):
+        score += 5
+    if _contains_recent_ai_signal(text):
+        score += 8
+    return score
+
+
+def rule_hit_contribution(title: str, abstract: str, rule: KeywordRule) -> tuple[int, int]:
+    """单条规则的命中数与得分贡献（已含泛词消歧加权）。
+
+    返回 (total_hits, contribution)。contribution 不含 required +10，
+    required/excluded 语义在请求期按规则标志组装。与 score_paper 的
+    规则循环体保持一致。
+    """
+    title_hits = _count_matches(title, rule)
+    abstract_hits = _count_matches(abstract, rule)
+    total_hits = title_hits + abstract_hits
+    if total_hits <= 0:
+        return 0, 0
+    text = f"{title}\n{abstract}"
+    contribution = int((title_hits * 8 + abstract_hits * 3) * _context_factor(rule.term, text))
+    return total_hits, contribution
+
+
 def score_paper(title: str, abstract: str, categories: list[str], rules: list[KeywordRule]) -> PaperMatch:
     matched: list[str] = []
     score = 0
