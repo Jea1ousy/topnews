@@ -174,7 +174,8 @@ fun NewsList(
 
                     items(
                         items = articles,
-                        key = { article -> article.id }
+                        key = { article -> article.id },
+                        contentType = { "news-item" }
                     ) { article ->
                         NewsListItem(
                             article = article,

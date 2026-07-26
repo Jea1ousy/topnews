@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 from dataclasses import asdict
 
 from .api import TopNewsApi
@@ -43,11 +44,13 @@ def main() -> None:
 
     scheduler_parser = subparsers.add_parser("scheduler", help="Run scheduled ingest loop")
     _add_fetch_options(scheduler_parser)
-    scheduler_parser.add_argument("--news-interval-minutes", type=float, default=10.0)
-    scheduler_parser.add_argument("--papers-interval-minutes", type=float, default=60.0)
-    scheduler_parser.add_argument("--figures-interval-minutes", type=float, default=180.0)
-    scheduler_parser.add_argument("--idle-sleep-seconds", type=float, default=30.0)
-    scheduler_parser.add_argument("--no-run-on-start", action="store_true")
+    _add_schedule_options(scheduler_parser)
+
+    retention_parser = subparsers.add_parser("retention", help="Apply data retention policy once")
+    retention_parser.add_argument("--article-max-age-days", type=int, default=30)
+    retention_parser.add_argument("--article-strip-age-days", type=int, default=14)
+    retention_parser.add_argument("--paper-max-age-days", type=int, default=90)
+    retention_parser.add_argument("--no-vacuum", action="store_true")
 
     keyword_parser = subparsers.add_parser("keyword-add", help="Add an academic keyword rule")
     keyword_parser.add_argument("rule")
@@ -55,6 +58,13 @@ def main() -> None:
     serve_parser = subparsers.add_parser("serve", help="Run HTTP API server")
     serve_parser.add_argument("--host")
     serve_parser.add_argument("--port", type=int)
+    serve_parser.add_argument(
+        "--with-scheduler",
+        action="store_true",
+        help="Run the ingest scheduler as a daemon thread inside the API process",
+    )
+    _add_fetch_options(serve_parser)
+    _add_schedule_options(serve_parser)
 
     args = parser.parse_args()
     config = load_config(args.config)
@@ -105,13 +115,18 @@ def main() -> None:
         run_scheduler(
             aggregator,
             _fetch_options_from_args(args),
-            ScheduleOptions(
-                news_interval_minutes=args.news_interval_minutes,
-                papers_interval_minutes=args.papers_interval_minutes,
-                figures_interval_minutes=args.figures_interval_minutes,
-                run_on_start=not args.no_run_on_start,
-                idle_sleep_seconds=args.idle_sleep_seconds,
-            ),
+            _schedule_options_from_args(args),
+        )
+        return
+
+    if args.command == "retention":
+        print(
+            store.apply_retention(
+                article_max_age_days=args.article_max_age_days,
+                article_strip_age_days=args.article_strip_age_days,
+                paper_max_age_days=args.paper_max_age_days,
+                vacuum=not args.no_vacuum,
+            )
         )
         return
 
@@ -120,6 +135,14 @@ def main() -> None:
         return
 
     if args.command == "serve":
+        if args.with_scheduler:
+            scheduler_thread = threading.Thread(
+                target=run_scheduler,
+                args=(aggregator, _fetch_options_from_args(args), _schedule_options_from_args(args)),
+                name="topnews-scheduler",
+                daemon=True,
+            )
+            scheduler_thread.start()
         TopNewsApi(config, store, aggregator).serve()
 
 
@@ -152,6 +175,26 @@ def _add_fetch_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--figures-limit", type=int, default=10)
     parser.add_argument("--figure-delay-seconds", type=float, default=3.0)
     parser.add_argument("--force-figures", action="store_true")
+
+
+def _add_schedule_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--news-interval-minutes", type=float, default=10.0)
+    parser.add_argument("--papers-interval-minutes", type=float, default=60.0)
+    parser.add_argument("--figures-interval-minutes", type=float, default=180.0)
+    parser.add_argument("--retention-interval-minutes", type=float, default=1440.0)
+    parser.add_argument("--idle-sleep-seconds", type=float, default=30.0)
+    parser.add_argument("--no-run-on-start", action="store_true")
+
+
+def _schedule_options_from_args(args: argparse.Namespace) -> ScheduleOptions:
+    return ScheduleOptions(
+        news_interval_minutes=args.news_interval_minutes,
+        papers_interval_minutes=args.papers_interval_minutes,
+        figures_interval_minutes=args.figures_interval_minutes,
+        retention_interval_minutes=args.retention_interval_minutes,
+        run_on_start=not args.no_run_on_start,
+        idle_sleep_seconds=args.idle_sleep_seconds,
+    )
 
 
 def _fetch_options_from_args(args: argparse.Namespace) -> FetchOptions:

@@ -52,15 +52,21 @@ class ArticleDetail:
     image_urls: tuple[str, ...] = ()
 
 
-def fetch_source(source: SourceConfig, timeout: float, user_agent: str, limit: int = 30) -> list[RawArticle]:
+def fetch_source(
+    source: SourceConfig,
+    timeout: float,
+    user_agent: str,
+    limit: int = 30,
+    enrich: bool = True,
+) -> list[RawArticle]:
     url = _cls_telegraph_url(source.url, limit) if source.kind == "cls_telegraph" else source.url
     body = _download(url, timeout, user_agent)
     if source.kind == "rss":
         articles = parse_rss(body, source, limit=limit)
-        return _enrich_short_articles_from_pages(articles, source, timeout, user_agent)
+        return enrich_articles(articles, source, timeout, user_agent) if enrich else articles
     if source.kind == "portal":
         articles = parse_portal(body, source, limit=limit)
-        return _enrich_short_articles_from_pages(articles, source, timeout, user_agent)
+        return enrich_articles(articles, source, timeout, user_agent) if enrich else articles
     if source.kind == "cls_telegraph":
         return parse_cls_telegraph(body, source, limit=limit)
     if source.kind == "eastmoney_kuaixun":
@@ -137,15 +143,26 @@ def parse_article_detail(body: bytes, base_url: str) -> ArticleDetail:
     )
 
 
-def _enrich_short_articles_from_pages(
+def enrich_articles(
     articles: list[RawArticle],
     source: SourceConfig,
     timeout: float,
     user_agent: str,
+    skip_ids: set[str] | None = None,
 ) -> list[RawArticle]:
+    """用详情页补全过短的文章正文。
+
+    skip_ids: 已入库过的 external_id 集合。这些文章此前已经历过一次
+    详情抓取（且 upsert 会保留更长的正文），跳过以避免每轮调度对
+    旧文章重复抓详情页。
+    """
+    skip = skip_ids or set()
     enriched: list[RawArticle] = []
     details_fetched = 0
     for article in articles:
+        if article.external_id in skip:
+            enriched.append(article)
+            continue
         if _should_fetch_article_detail(article, source) and details_fetched < MAX_DETAIL_PAGES_PER_SOURCE:
             details_fetched += 1
             try:

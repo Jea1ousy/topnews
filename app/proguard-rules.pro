@@ -19,3 +19,22 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# ---- TopNews keep 规则 ----
+# Gson 通过反射构造 DTO：保留 dto 包的类与字段
+-keep class com.example.topnews.data.remote.dto.** { *; }
+-keepattributes Signature
+-keepattributes *Annotation*
+-keepattributes InnerClasses,EnclosingMethod
+
+# Retrofit suspend 函数依赖 Continuation 泛型信息
+-keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
+-keep,allowobfuscation,allowshrinking interface retrofit2.Call
+-keep,allowobfuscation,allowshrinking class retrofit2.Response
+
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn javax.annotation.**
+
+# jlatexmath 通过 assets/反射加载资源
+-keep class ru.noties.jlatexmath.** { *; }

@@ -195,6 +195,7 @@ fun HomeScreen(
                         },
                         onArticleClick = { article ->
                             previewArticle = article
+                            viewModel.ensureArticleDetail(article)
                         },
                         modifier = Modifier.fillMaxSize()
                     )
@@ -204,9 +205,15 @@ fun HomeScreen(
     }
 
     previewArticle?.let { article ->
+        // 详情按需拉取后会合并进信息流，这里取最新版本，保证预览卡展示全文
+        val liveArticle = uiState.feedsByCategory.values
+            .asSequence()
+            .flatMap { feed -> feed.articles.asSequence() }
+            .firstOrNull { item -> item.id == article.id }
+            ?: article
         NewsPreviewOverlay(
-            article = article,
-            aiSummaryState = uiState.aiSummaries[article.id],
+            article = liveArticle,
+            aiSummaryState = uiState.aiSummaries[liveArticle.id],
             onSummarizeClick = viewModel::summarizeArticle,
             onClose = closePreview,
             modifier = Modifier.fillMaxSize()

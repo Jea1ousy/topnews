@@ -1,6 +1,8 @@
 package com.example.topnews.data.remote
 
+import com.example.topnews.data.remote.dto.BackendNewsDto
 import com.example.topnews.data.remote.dto.BackendNewsPageResponse
+import com.example.topnews.data.remote.dto.BackendPaperDto
 import com.example.topnews.data.remote.dto.BackendPaperPageResponse
 import com.example.topnews.data.remote.dto.AddAcademicKeywordRequest
 import com.example.topnews.data.remote.dto.BackendAcademicKeywordDto
@@ -28,7 +30,8 @@ interface TopNewsBackendApi {
     suspend fun getRecommendations(
         @Query("page") page: Int,
         @Query("pageSize") pageSize: Int,
-        @Query("exclude") exclude: String? = null
+        @Query("exclude") exclude: String? = null,
+        @Query("fields") fields: String = "list"
     ): BackendNewsPageResponse
 
     @GET("v1/news")
@@ -36,22 +39,35 @@ interface TopNewsBackendApi {
         @Query("page") page: Int,
         @Query("pageSize") pageSize: Int,
         @Query("category") category: String? = null,
-        @Query("exclude") exclude: String? = null
+        @Query("exclude") exclude: String? = null,
+        @Query("fields") fields: String = "list"
     ): BackendNewsPageResponse
 
     @GET("v1/ai-frontier")
     suspend fun getAiFrontier(
         @Query("page") page: Int,
         @Query("pageSize") pageSize: Int,
-        @Query("exclude") exclude: String? = null
+        @Query("exclude") exclude: String? = null,
+        @Query("fields") fields: String = "list"
     ): BackendPaperPageResponse
 
     @GET("v1/papers/recommendations")
     suspend fun getPaperRecommendations(
         @Query("page") page: Int,
         @Query("pageSize") pageSize: Int,
-        @Query("exclude") exclude: String? = null
+        @Query("exclude") exclude: String? = null,
+        @Query("fields") fields: String = "list"
     ): BackendPaperPageResponse
+
+    @GET("v1/articles/{id}")
+    suspend fun getArticleDetail(
+        @Path("id") id: String
+    ): BackendNewsDto
+
+    @GET("v1/papers/{id}")
+    suspend fun getPaperDetail(
+        @Path("id") id: String
+    ): BackendPaperDto
 
     @GET("v1/academic/keywords")
     suspend fun getAcademicKeywords(): List<BackendAcademicKeywordDto>

@@ -49,6 +49,18 @@ class TopNewsBackendRepository(
         api.deleteAcademicKeyword(id)
     }
 
+    /**
+     * 列表接口现在返回瘦身负载（无全文），打开文章时按需拉取全文。
+     */
+    suspend fun getArticleDetail(article: NewsArticle): NewsArticle? {
+        require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
+        return if (article.channelName == ACADEMIC_CATEGORY) {
+            api.getPaperDetail(article.id).toNewsArticle()
+        } else {
+            api.getArticleDetail(article.id).toNewsArticle()
+        }
+    }
+
     suspend fun summarizeArticle(article: NewsArticle): String {
         require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL，请在 local.properties 中配置" }
         val response = if (article.channelName == ACADEMIC_CATEGORY) {

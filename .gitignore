@@ -29,3 +29,8 @@ app/src/test/
 app/src/androidTest/
 
 /.claude
+
+# session/temp artifacts
+/_logs/
+/_to_delete/
+/_update-notifier-last-checked

@@ -3,7 +3,6 @@ package com.example.topnews.ui.screen.home.components
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -37,6 +36,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,11 +48,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -74,7 +76,9 @@ import coil.compose.AsyncImage
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.ui.screen.home.AiSummaryState
 import com.example.topnews.ui.theme.TopnewsTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.URI
 import kotlin.math.roundToInt
 
@@ -136,12 +140,15 @@ fun NewsPreviewOverlay(
             }
         }
 
-        val scrimAlpha = ((fullHeightPx - cardOffsetPx) / fullHeightPx)
-            .coerceIn(0f, 1f) * 0.34f
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                // 逐帧变化的 cardOffsetPx 只在 draw 阶段读取，拖拽/动画期间不再触发重组
+                .drawBehind {
+                    val scrimAlpha = ((fullHeightPx - cardOffsetPx) / fullHeightPx)
+                        .coerceIn(0f, 1f) * 0.34f
+                    drawRect(Color.Black.copy(alpha = scrimAlpha))
+                }
                 .then(
                     if (isDismissing) {
                         Modifier
@@ -159,9 +166,6 @@ fun NewsPreviewOverlay(
                 )
         )
 
-        val cornerRadius = (
-            22f * (cardOffsetPx / previewTopPx).coerceIn(0f, 1f)
-        ).dp
         val dragState = rememberDraggableState { delta ->
             if (!isFullDetail) {
                 cardOffsetPx = (cardOffsetPx + delta).coerceIn(0f, fullHeightPx)
@@ -172,7 +176,17 @@ fun NewsPreviewOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .offset { IntOffset(0, cardOffsetPx.roundToInt()) }
-                .clip(RoundedCornerShape(topStart = cornerRadius, topEnd = cornerRadius))
+                // 圆角随拖拽偏移变化：graphicsLayer 内读取状态，避免每帧重组
+                .graphicsLayer {
+                    val radiusPx = 22.dp.toPx() * (cardOffsetPx / previewTopPx).coerceIn(0f, 1f)
+                    shape = RoundedCornerShape(
+                        topStart = CornerSize(radiusPx),
+                        topEnd = CornerSize(radiusPx),
+                        bottomEnd = CornerSize(0f),
+                        bottomStart = CornerSize(0f)
+                    )
+                    clip = true
+                }
                 .background(MaterialTheme.colorScheme.surface)
                 .draggable(
                     state = dragState,
@@ -299,8 +313,12 @@ private fun FullArticleDetail(
     onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val detailBlocks = remember(article.id, article.content, article.description, article.html, article.imageUrls) {
-        article.detailBlocks()
+    // 正文 HTML 解析放到 Default 调度器，长文首次展开不再阻塞主线程
+    val detailBlocks by produceState(
+        emptyList<ArticleDetailBlock>(),
+        article.id, article.content, article.description, article.html, article.imageUrls
+    ) {
+        value = withContext(Dispatchers.Default) { article.detailBlocks() }
     }
     val inlineImageUrls = remember(detailBlocks) {
         detailBlocks.mapNotNull { (it as? ArticleDetailBlock.Image)?.url }.toSet()
@@ -656,12 +674,12 @@ private fun PreviewImage(
     videoDuration: String? = null
 ) {
     val imageAspectRatioState = remember(imageUrl) {
-        mutableFloatStateOf(DEFAULT_IMAGE_ASPECT_RATIO)
+        // 同一图片的宽高比进程内缓存：二次展示首帧即正确比例，正文不再跳动
+        mutableFloatStateOf(imageAspectRatioCache[imageUrl] ?: DEFAULT_IMAGE_ASPECT_RATIO)
     }
     Box(
         modifier = modifier
             .aspectRatio(imageAspectRatioState.floatValue)
-            .animateContentSize()
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick)
@@ -674,8 +692,10 @@ private fun PreviewImage(
             onSuccess = { state ->
                 val size = state.painter.intrinsicSize
                 if (size.width > 0f && size.height > 0f) {
-                    imageAspectRatioState.floatValue = (size.width / size.height)
+                    val ratio = (size.width / size.height)
                         .coerceIn(MIN_IMAGE_ASPECT_RATIO, MAX_IMAGE_ASPECT_RATIO)
+                    imageAspectRatioCache[imageUrl] = ratio
+                    imageAspectRatioState.floatValue = ratio
                 }
             }
         )
@@ -1105,6 +1125,8 @@ private fun splitLongParagraph(paragraph: String): List<String> {
     }
     return paragraphs
 }
+
+private val imageAspectRatioCache = HashMap<String, Float>()
 
 private const val PREVIEW_TOP_FRACTION = 0.38f
 private const val EXPAND_THRESHOLD_FRACTION = 0.30f

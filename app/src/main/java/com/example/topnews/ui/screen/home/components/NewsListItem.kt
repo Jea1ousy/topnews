@@ -26,7 +26,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.topnews.domain.model.NewsArticle
 
 @Composable
@@ -109,7 +111,12 @@ private fun NewsThumbnail(article: NewsArticle, imageUrl: String) {
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         AsyncImage(
-            model = imageUrl,
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(imageUrl)
+                // 按缩略图实际尺寸解码（约 112x76dp @3x），避免大图整幅解码
+                .size(THUMBNAIL_DECODE_WIDTH_PX, THUMBNAIL_DECODE_HEIGHT_PX)
+                .crossfade(true)
+                .build(),
             contentDescription = article.title,
             modifier = Modifier
                 .fillMaxSize(),
@@ -148,6 +155,9 @@ private fun isJunkArticleImageUrl(url: String): Boolean {
     val lowered = url.lowercase()
     return JUNK_IMAGE_URL_TOKENS.any { it in lowered }
 }
+
+private const val THUMBNAIL_DECODE_WIDTH_PX = 336
+private const val THUMBNAIL_DECODE_HEIGHT_PX = 228
 
 private val JUNK_IMAGE_URL_TOKENS = listOf(
     "avatar",

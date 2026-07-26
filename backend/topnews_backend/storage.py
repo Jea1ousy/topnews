@@ -5,13 +5,15 @@ import math
 import json
 import re
 import sqlite3
+import time
 import urllib.parse
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Iterator
-
 from .academic import KeywordRule, RawPaper, paper_json, paper_list, parse_keyword_rule, score_paper
 from .fetchers import RawArticle
 from .summary import build_summary
@@ -104,24 +106,79 @@ class Page:
         return math.ceil(self.total_count / self.page_size)
 
 
+@dataclass
+class _PaperRecommendationCache:
+    key: tuple[object, ...]
+    created_at: float
+    items: list[Paper]
+
+
+@dataclass
+class _NewsRecommendationCache:
+    key: tuple[object, ...]
+    created_at: float
+    ranked_external_ids: list[str]
+    candidate_limit: int
+    total_count: int
+
+
+_PAPER_SELECT_COLUMNS = """
+    p.id,
+    p.external_id,
+    p.title,
+    p.authors,
+    p.abstract,
+    p.source,
+    p.url,
+    p.pdf_url,
+    p.image_url,
+    p.image_caption,
+    p.image_data IS NOT NULL AS image_cached,
+    p.categories,
+    p.published_at,
+    p.updated_at,
+    p.fetched_at,
+    p.figure_checked_at,
+    p.ai_summary
+"""
+
+_PAPER_RECOMMENDATION_CACHE_TTL_SECONDS = 600.0
+_NEWS_RECOMMENDATION_CACHE_TTL_SECONDS = 90.0
+
+
 class NewsStore:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._paper_recommendation_cache: _PaperRecommendationCache | None = None
+        self._paper_recommendation_cache_lock = RLock()
+        self._news_recommendation_cache: _NewsRecommendationCache | None = None
+        self._news_recommendation_cache_lock = RLock()
         self.init_schema()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA synchronous = NORMAL")
         try:
             yield connection
             connection.commit()
         finally:
             connection.close()
 
+    def invalidate_paper_recommendation_cache(self) -> None:
+        with self._paper_recommendation_cache_lock:
+            self._paper_recommendation_cache = None
+
+    def invalidate_news_recommendation_cache(self) -> None:
+        with self._news_recommendation_cache_lock:
+            self._news_recommendation_cache = None
+
     def init_schema(self) -> None:
         with self.connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS articles (
@@ -149,10 +206,17 @@ class NewsStore:
             _ensure_column(connection, "articles", "image_cached_at", "TEXT")
             _ensure_column(connection, "articles", "ai_summary", "TEXT")
             _ensure_column(connection, "articles", "ai_summary_at", "TEXT")
+            # 入库时计算的派生列：请求期不再全文扫描/重算
+            _ensure_column(connection, "articles", "quality_score", "REAL NOT NULL DEFAULT 0")
+            _ensure_column(connection, "articles", "is_ai_news", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "articles", "content_len", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "articles", "title_fingerprint", "TEXT NOT NULL DEFAULT ''")
             connection.execute("UPDATE articles SET category = '时政' WHERE category = '国内'")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles(region)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_ai_news ON articles(is_ai_news, published_at)")
+            self._backfill_article_derived_columns(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS academic_keywords (
@@ -197,6 +261,49 @@ class NewsStore:
             connection.execute("CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_keywords_enabled ON academic_keywords(enabled)")
 
+    def _backfill_article_derived_columns(self, connection: sqlite3.Connection) -> None:
+        """旧库迁移：为存量行补齐派生列（只在指纹为空的行上执行一次）。"""
+        rows = connection.execute(
+            """
+            SELECT id, title, description, content, image_url, published_at, category
+            FROM articles
+            WHERE title_fingerprint = ''
+            """
+        ).fetchall()
+        for row in rows:
+            quality, is_ai, content_len, fingerprint = _derived_article_values(
+                title=row["title"],
+                description=row["description"],
+                content=row["content"],
+                image_url=row["image_url"],
+                published_at=row["published_at"],
+                category=row["category"],
+            )
+            connection.execute(
+                """
+                UPDATE articles
+                SET quality_score = ?, is_ai_news = ?, content_len = ?, title_fingerprint = ?
+                WHERE id = ?
+                """,
+                (quality, is_ai, content_len, fingerprint, row["id"]),
+            )
+
+    def existing_external_ids(self, external_ids: list[str]) -> set[str]:
+        """返回给定 external_id 中已入库的子集（用于增量丰富跳过详情抓取）。"""
+        if not external_ids:
+            return set()
+        found: set[str] = set()
+        with self.connect() as connection:
+            for start in range(0, len(external_ids), 500):
+                chunk = external_ids[start : start + 500]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows = connection.execute(
+                    f"SELECT external_id FROM articles WHERE external_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                found.update(row["external_id"] for row in rows)
+        return found
+
     def upsert_articles(self, articles: list[RawArticle]) -> int:
         if not articles:
             return 0
@@ -205,35 +312,62 @@ class NewsStore:
         changed = 0
         with self.connect() as connection:
             for article in articles:
+                quality, is_ai, content_len, fingerprint = _derived_article_values(
+                    title=article.title,
+                    description=article.description,
+                    content=article.content,
+                    image_url=article.image_url,
+                    published_at=article.published_at,
+                    category=article.category,
+                )
                 connection.execute(
                     """
                     INSERT INTO articles (
                         external_id, title, url, source, region, category,
-                        description, content, content_html, image_url, image_urls, published_at, fetched_at
+                        description, content, content_html, image_url, image_urls, published_at, fetched_at,
+                        quality_score, is_ai_news, content_len, title_fingerprint
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(external_id) DO UPDATE SET
                         title=excluded.title,
                         source=excluded.source,
                         region=excluded.region,
                         category=excluded.category,
-                        description=excluded.description,
-                        content=excluded.content,
-                        content_html=excluded.content_html,
                         ai_summary=CASE
                             WHEN excluded.title IS NOT articles.title
-                              OR excluded.description IS NOT articles.description
-                              OR excluded.content IS NOT articles.content
-                              OR excluded.content_html IS NOT articles.content_html THEN NULL
+                              OR length(excluded.content) > length(articles.content)
+                              OR length(excluded.content_html) > length(articles.content_html) THEN NULL
                             ELSE articles.ai_summary
                         END,
                         ai_summary_at=CASE
                             WHEN excluded.title IS NOT articles.title
-                              OR excluded.description IS NOT articles.description
-                              OR excluded.content IS NOT articles.content
-                              OR excluded.content_html IS NOT articles.content_html THEN NULL
+                              OR length(excluded.content) > length(articles.content)
+                              OR length(excluded.content_html) > length(articles.content_html) THEN NULL
                             ELSE articles.ai_summary_at
                         END,
+                        -- 保留更长的正文：跳过详情抓取的轮次不会用短的 feed 版本覆盖已丰富正文
+                        description=CASE
+                            WHEN length(excluded.description) >= length(articles.description) THEN excluded.description
+                            ELSE articles.description
+                        END,
+                        content=CASE
+                            WHEN length(excluded.content) >= length(articles.content) THEN excluded.content
+                            ELSE articles.content
+                        END,
+                        content_html=CASE
+                            WHEN length(excluded.content_html) >= length(articles.content_html) THEN excluded.content_html
+                            ELSE articles.content_html
+                        END,
+                        quality_score=CASE
+                            WHEN length(excluded.content) >= length(articles.content) THEN excluded.quality_score
+                            ELSE articles.quality_score
+                        END,
+                        content_len=CASE
+                            WHEN length(excluded.content) >= length(articles.content) THEN excluded.content_len
+                            ELSE articles.content_len
+                        END,
+                        is_ai_news=MAX(excluded.is_ai_news, articles.is_ai_news),
+                        title_fingerprint=excluded.title_fingerprint,
                         image_data=CASE
                             WHEN excluded.image_url IS NOT articles.image_url THEN NULL
                             ELSE articles.image_data
@@ -265,9 +399,15 @@ class NewsStore:
                         json.dumps(article.image_urls, ensure_ascii=False),
                         article.published_at,
                         now,
+                        quality,
+                        is_ai,
+                        content_len,
+                        fingerprint,
                     ),
                 )
                 changed += 1
+        if changed:
+            self.invalidate_news_recommendation_cache()
         return changed
 
     def list_articles(
@@ -313,17 +453,77 @@ class NewsStore:
         source: str | None = None,
         excluded_ids: list[str] | None = None,
     ) -> Page:
-        where, params = self._filters(category, region, query, source, excluded_ids or [])
+        """新闻推荐：入库时已算好 quality_score/title_fingerprint，
+        请求期只做「轻量候选查询（无全文列）→ 时间衰减排序 → 指纹软去重」，
+        排好的 external_id 列表进短 TTL 缓存，翻页/下拉大多命中。"""
         page = max(page, 1)
         page_size = min(max(page_size, 1), 100)
         offset = (page - 1) * page_size
+        needed = offset + page_size
 
+        cache_key = (category or "", region or "", query or "", source or "")
+        now = time.monotonic()
+        ranked_ids: list[str] | None = None
+        total_count = 0
+        with self._news_recommendation_cache_lock:
+            cache = self._news_recommendation_cache
+            if (
+                cache
+                and cache.key == cache_key
+                and now - cache.created_at <= _NEWS_RECOMMENDATION_CACHE_TTL_SECONDS
+                # 深翻页需要更大的候选集时视为未命中
+                and (len(cache.ranked_external_ids) >= needed or cache.candidate_limit >= cache.total_count)
+            ):
+                ranked_ids = cache.ranked_external_ids
+                total_count = cache.total_count
+
+        if ranked_ids is None:
+            where, params = self._filters(category, region, query, source, [])
+            with self.connect() as connection:
+                total_count = connection.execute(
+                    f"SELECT COUNT(*) AS total FROM articles a {where}", params
+                ).fetchone()["total"]
+                # 候选集只取排序需要的轻量列，避免把全文拖进内存
+                candidate_limit = min(total_count, max(needed + 200, 300))
+                rows = connection.execute(
+                    f"""
+                    SELECT a.external_id, a.quality_score, a.title_fingerprint,
+                           a.published_at, a.fetched_at
+                    FROM articles a
+                    {where}
+                    ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
+                    LIMIT ?
+                    """,
+                    [*params, candidate_limit],
+                ).fetchall()
+            ranked_ids = _rank_candidate_rows(rows)
+            with self._news_recommendation_cache_lock:
+                self._news_recommendation_cache = _NewsRecommendationCache(
+                    key=cache_key,
+                    created_at=now,
+                    ranked_external_ids=ranked_ids,
+                    candidate_limit=candidate_limit,
+                    total_count=total_count,
+                )
+
+        if excluded_ids:
+            excluded = set(excluded_ids)
+            visible_ids = [external_id for external_id in ranked_ids if external_id not in excluded]
+        else:
+            visible_ids = ranked_ids
+        page_ids = visible_ids[offset : offset + page_size]
+        return Page(
+            items=self._articles_by_external_ids(page_ids),
+            page=page,
+            page_size=page_size,
+            total_count=total_count,
+        )
+
+    def _articles_by_external_ids(self, external_ids: list[str]) -> list[Article]:
+        if not external_ids:
+            return []
+        placeholders = ", ".join("?" for _ in external_ids)
         with self.connect() as connection:
-            total_count = connection.execute(f"SELECT COUNT(*) AS total FROM articles a {where}", params).fetchone()["total"]
-            # 取一个较大的候选集用于 Python 层重排（时间衰减 + 质量分 + 软去重），
-            # 粗排仅按时间倒序，精排在内存里完成。
-            # 确保分页时候选集足够大：取前几页所需 + 额外缓冲，避免高分被遗漏。
-            candidate_limit = min(total_count, max(page * page_size + 200, 300))
             rows = connection.execute(
                 f"""
                 SELECT
@@ -332,15 +532,12 @@ class NewsStore:
                     a.published_at, a.fetched_at, a.ai_summary,
                     a.image_data IS NOT NULL AS image_cached
                 FROM articles a
-                {where}
-                ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC
-                LIMIT ?
+                WHERE a.external_id IN ({placeholders})
                 """,
-                [*params, candidate_limit],
+                external_ids,
             ).fetchall()
-        articles = [_row_to_article(row) for row in rows]
-        ranked = _rank_articles(articles)
-        return Page(items=ranked[offset : offset + page_size], page=page, page_size=page_size, total_count=total_count)
+        by_id = {row["external_id"]: _row_to_article(row) for row in rows}
+        return [by_id[external_id] for external_id in external_ids if external_id in by_id]
 
     def categories(self) -> list[dict[str, object]]:
         with self.connect() as connection:
@@ -387,6 +584,7 @@ class NewsStore:
                 "SELECT * FROM academic_keywords WHERE raw_rule = ?",
                 (rule.raw_rule,),
             ).fetchone()
+        self.invalidate_paper_recommendation_cache()
         return _row_to_keyword(row)
 
     def list_academic_keywords(self, include_disabled: bool = False) -> list[AcademicKeyword]:
@@ -403,7 +601,10 @@ class NewsStore:
                 "UPDATE academic_keywords SET enabled = 0 WHERE id = ? AND enabled = 1",
                 (keyword_id,),
             )
-        return cursor.rowcount > 0
+        changed = cursor.rowcount > 0
+        if changed:
+            self.invalidate_paper_recommendation_cache()
+        return changed
 
     def get_article_image(self, external_id: str) -> tuple[bytes, str] | None:
         with self.connect() as connection:
@@ -552,6 +753,7 @@ class NewsStore:
                     ),
                 )
                 changed += 1
+        self.invalidate_paper_recommendation_cache()
         return changed
 
     def papers_pending_figures(self, limit: int = 10, force: bool = False) -> list[Paper]:
@@ -563,7 +765,7 @@ class NewsStore:
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT p.*
+                SELECT {_PAPER_SELECT_COLUMNS}
                 FROM papers p
                 {where}
                 ORDER BY COALESCE(p.published_at, p.fetched_at) DESC, p.id DESC
@@ -593,7 +795,10 @@ class NewsStore:
                 """,
                 (image_url, image_caption, image_data, image_mime_type, cached_at, checked_at, external_id),
             )
-        return cursor.rowcount > 0
+        changed = cursor.rowcount > 0
+        if changed:
+            self.invalidate_paper_recommendation_cache()
+        return changed
 
     def get_paper_image(self, external_id: str) -> tuple[bytes, str] | None:
         with self.connect() as connection:
@@ -612,8 +817,8 @@ class NewsStore:
     def get_paper(self, external_id: str) -> Paper | None:
         with self.connect() as connection:
             row = connection.execute(
-                """
-                SELECT p.*
+                f"""
+                SELECT {_PAPER_SELECT_COLUMNS}
                 FROM papers p
                 WHERE p.external_id = ? OR CAST(p.id AS TEXT) = ?
                 """,
@@ -632,7 +837,10 @@ class NewsStore:
                 """,
                 (summary, summarized_at, external_id, external_id),
             )
-        return cursor.rowcount > 0
+        changed = cursor.rowcount > 0
+        if changed:
+            self.invalidate_paper_recommendation_cache()
+        return changed
 
     def recommend_papers(
         self,
@@ -642,29 +850,52 @@ class NewsStore:
         category: str | None = None,
         excluded_ids: list[str] | None = None,
         use_keywords: bool = True,
+        force_refresh: bool = False,
     ) -> Page:
         rules = self.keyword_rules() if use_keywords else []
         if query:
             rules.append(parse_keyword_rule(query))
+
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 100)
+        cache_key = (
+            query or "",
+            category or "",
+            use_keywords,
+            tuple(
+                (
+                    rule.raw_rule,
+                    rule.term,
+                    rule.display_name,
+                    rule.is_required,
+                    rule.is_excluded,
+                    rule.is_regex,
+                )
+                for rule in rules
+            ),
+        )
+        now = time.monotonic()
+        if not force_refresh:
+            with self._paper_recommendation_cache_lock:
+                cache = self._paper_recommendation_cache
+                if (
+                    cache
+                    and cache.key == cache_key
+                    and now - cache.created_at <= _PAPER_RECOMMENDATION_CACHE_TTL_SECONDS
+                ):
+                    return _paper_page_from_items(cache.items, page, page_size, excluded_ids)
 
         clauses: list[str] = []
         params: list[str] = []
         if category:
             clauses.append("p.categories LIKE ?")
             params.append(f"%{category}%")
-        if excluded_ids:
-            placeholders = ", ".join("?" for _ in excluded_ids)
-            clauses.append(f"(p.external_id NOT IN ({placeholders}) AND CAST(p.id AS TEXT) NOT IN ({placeholders}))")
-            params.extend(excluded_ids)
-            params.extend(excluded_ids)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        page = max(page, 1)
-        page_size = min(max(page_size, 1), 100)
 
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT p.*
+                SELECT {_PAPER_SELECT_COLUMNS}
                 FROM papers p
                 {where}
                 ORDER BY COALESCE(p.published_at, p.fetched_at) DESC, p.id DESC
@@ -725,9 +956,14 @@ class NewsStore:
 
         result.sort(key=lambda pair: (pair[0], pair[1].published_at or pair[1].fetched_at), reverse=True)
 
-        offset = (page - 1) * page_size
-        page_items = [paper for _, paper in result][offset : offset + page_size]
-        return Page(items=page_items, page=page, page_size=page_size, total_count=len(result))
+        items = [paper for _, paper in result]
+        with self._paper_recommendation_cache_lock:
+            self._paper_recommendation_cache = _PaperRecommendationCache(
+                key=cache_key,
+                created_at=now,
+                items=items,
+            )
+        return _paper_page_from_items(items, page, page_size, excluded_ids)
 
     def ai_frontier(self, page: int, page_size: int, excluded_ids: list[str] | None = None) -> Page:
         return self.recommend_ai_news(
@@ -743,14 +979,9 @@ class NewsStore:
         excluded_ids: list[str] | None = None,
     ) -> Page:
         excluded_ids = excluded_ids or []
-        clauses = ["a.category = ?"]
-        params: list[str] = ["科技"]
-        signal_clauses: list[str] = []
-        for signal in AI_NEWS_SIGNALS:
-            signal_clauses.append("(a.title LIKE ? OR a.description LIKE ? OR a.content LIKE ?)")
-            like = f"%{signal}%"
-            params.extend([like, like, like])
-        clauses.append("(" + " OR ".join(signal_clauses) + ")")
+        # is_ai_news 在入库时算好并建了索引，不再对全文做 LIKE 扫描
+        clauses = ["a.is_ai_news = 1"]
+        params: list[str] = []
         if excluded_ids:
             placeholders = ", ".join("?" for _ in excluded_ids)
             clauses.append(f"(a.external_id NOT IN ({placeholders}) AND CAST(a.id AS TEXT) NOT IN ({placeholders}))")
@@ -778,6 +1009,61 @@ class NewsStore:
                 [*params, page_size, offset],
             ).fetchall()
         return Page(items=[_row_to_article(row) for row in rows], page=page, page_size=page_size, total_count=total_count)
+
+    def apply_retention(
+        self,
+        article_max_age_days: int = 30,
+        article_strip_age_days: int = 14,
+        paper_max_age_days: int = 90,
+        vacuum: bool = True,
+    ) -> dict[str, int]:
+        """数据保留策略，控制 SQLite 体积：
+
+        - 删除 30 天前的文章（时间衰减下早已不可能进入推荐）
+        - 14 天前的文章置空 content_html 与图片 BLOB（正文文本保留）
+        - 删除 90 天前的论文
+        - 有删除时执行 VACUUM 回收磁盘
+        """
+        now = datetime.now(timezone.utc)
+        cutoff_delete = (now - timedelta(days=article_max_age_days)).isoformat()
+        cutoff_strip = (now - timedelta(days=article_strip_age_days)).isoformat()
+        cutoff_paper = (now - timedelta(days=paper_max_age_days)).isoformat()
+
+        with self.connect() as connection:
+            deleted_articles = connection.execute(
+                "DELETE FROM articles WHERE COALESCE(published_at, fetched_at) < ?",
+                (cutoff_delete,),
+            ).rowcount
+            stripped_articles = connection.execute(
+                """
+                UPDATE articles
+                SET content_html = '', image_data = NULL, image_mime_type = NULL, image_cached_at = NULL
+                WHERE COALESCE(published_at, fetched_at) < ?
+                  AND (content_html != '' OR image_data IS NOT NULL)
+                """,
+                (cutoff_strip,),
+            ).rowcount
+            deleted_papers = connection.execute(
+                "DELETE FROM papers WHERE COALESCE(published_at, fetched_at) < ?",
+                (cutoff_paper,),
+            ).rowcount
+
+        if deleted_articles or stripped_articles:
+            self.invalidate_news_recommendation_cache()
+        if deleted_papers:
+            self.invalidate_paper_recommendation_cache()
+        if vacuum and (deleted_articles or deleted_papers or stripped_articles):
+            vacuum_connection = sqlite3.connect(self.database_path, timeout=30)
+            try:
+                vacuum_connection.execute("VACUUM")
+            finally:
+                vacuum_connection.close()
+
+        return {
+            "deleted_articles": deleted_articles,
+            "stripped_articles": stripped_articles,
+            "deleted_papers": deleted_papers,
+        }
 
     def _filters(
         self,
@@ -831,6 +1117,59 @@ def article_to_dict(article: Article) -> dict[str, object]:
     return payload
 
 
+def article_to_list_dict(article: Article) -> dict[str, object]:
+    """列表接口的瘦身负载：不带 content/content_html/description 全文。"""
+    return {
+        "id": article.id,
+        "external_id": article.external_id,
+        "title": article.title,
+        "url": article.url,
+        "source": article.source,
+        "region": article.region,
+        "category": article.category,
+        "summary": build_summary(article.description, article.content, article.title),
+        "image_source_url": article.image_url,
+        "image_url": (
+            f"/v1/articles/{urllib.parse.quote(article.external_id, safe='')}/image?v={_image_version(article.image_url)}"
+            if article.image_url
+            else None
+        ),
+        "published_at": article.published_at,
+        "fetched_at": article.fetched_at,
+        "ai_summary": article.ai_summary,
+        "item_type": "news",
+    }
+
+
+def paper_to_list_dict(paper: Paper) -> dict[str, object]:
+    """论文列表瘦身负载：不带完整 abstract。"""
+    return {
+        "id": paper.id,
+        "external_id": paper.external_id,
+        "title": paper.title,
+        "authors": paper.authors,
+        "source": paper.source,
+        "url": paper.url,
+        "pdf_url": paper.pdf_url,
+        "summary": build_summary(paper.abstract, paper.title),
+        "image_caption": paper.image_caption,
+        "image_source_url": paper.image_url,
+        "image_url": (
+            f"/v1/papers/{urllib.parse.quote(paper.external_id, safe='')}/image"
+            if paper.image_cached
+            else None
+        ),
+        "categories": paper.categories,
+        "published_at": paper.published_at,
+        "updated_at": paper.updated_at,
+        "fetched_at": paper.fetched_at,
+        "ai_summary": paper.ai_summary,
+        "matched_keywords": paper.matched_keywords,
+        "score": paper.score,
+        "item_type": "paper",
+    }
+
+
 def keyword_to_dict(keyword: AcademicKeyword) -> dict[str, object]:
     return asdict(keyword)
 
@@ -864,6 +1203,30 @@ def _interleave(first: list[Article | Paper], second: list[Article | Paper]) -> 
         if index < len(second):
             combined.append(second[index])
     return combined
+
+
+def _paper_page_from_items(
+    items: list[Paper],
+    page: int,
+    page_size: int,
+    excluded_ids: list[str] | None,
+) -> Page:
+    excluded = set(excluded_ids or [])
+    if excluded:
+        filtered = [
+            paper
+            for paper in items
+            if paper.external_id not in excluded and str(paper.id) not in excluded
+        ]
+    else:
+        filtered = items
+    offset = (page - 1) * page_size
+    return Page(
+        items=filtered[offset : offset + page_size],
+        page=page,
+        page_size=page_size,
+        total_count=len(filtered),
+    )
 
 
 def _row_to_article(row: sqlite3.Row) -> Article:
@@ -902,6 +1265,8 @@ def _row_to_keyword(row: sqlite3.Row) -> AcademicKeyword:
 
 
 def _row_to_paper(row: sqlite3.Row) -> Paper:
+    columns = set(row.keys())
+    image_cached = bool(row["image_cached"]) if "image_cached" in columns else row["image_data"] is not None
     return Paper(
         id=row["id"],
         external_id=row["external_id"],
@@ -913,7 +1278,7 @@ def _row_to_paper(row: sqlite3.Row) -> Paper:
         pdf_url=row["pdf_url"],
         image_url=row["image_url"],
         image_caption=row["image_caption"],
-        image_cached=row["image_data"] is not None,
+        image_cached=image_cached,
         categories=paper_list(row["categories"]),
         published_at=row["published_at"],
         updated_at=row["updated_at"],
@@ -947,6 +1312,60 @@ _NEWS_DEDUP_THRESHOLD = 0.6
 _NEWS_DEDUP_PENALTY = 0.3
 _PAPER_DEDUP_THRESHOLD = 0.6
 _PAPER_DEDUP_PENALTY = 0.3
+
+
+def _derived_article_values(
+    title: str,
+    description: str,
+    content: str,
+    image_url: str | None,
+    published_at: str | None,
+    category: str,
+) -> tuple[float, int, int, str]:
+    """入库时计算派生列：质量分、AI 前沿标记、正文长度、标题指纹。"""
+    content_len = len(content or "")
+    score = 1.0
+    if content_len >= 400:
+        score += 2.0
+    elif content_len >= 120:
+        score += 1.0
+    elif content_len < 40:
+        score *= 0.6
+    score += _ai_signal_hits(title or "", description or "") * 1.5
+    if image_url:
+        score += 0.3
+    if published_at:
+        score += 0.2
+    is_ai_news = int(
+        category == "科技"
+        and _ai_signal_hits(title or "", f"{description or ''} {content or ''}") > 0
+    )
+    fingerprint = _title_fingerprint(title or "")
+    return score, is_ai_news, content_len, fingerprint or "-"
+
+
+def _rank_candidate_rows(rows: list[sqlite3.Row]) -> list[str]:
+    """对轻量候选行做精排：final = 入库质量分 × 时间衰减，指纹分组软去重。"""
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[float, str, str]] = []
+    for row in rows:
+        decay = _time_decay(row["published_at"] or row["fetched_at"], now)
+        scored.append((float(row["quality_score"]) * decay, row["external_id"], row["title_fingerprint"] or "-"))
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    grouped: dict[str, list[tuple[float, str]]] = defaultdict(list)
+    for score, external_id, fingerprint in scored:
+        grouped[fingerprint].append((score, external_id))
+
+    result: list[tuple[float, str]] = []
+    for group in grouped.values():
+        best_score, best_id = group[0]
+        result.append((best_score, best_id))
+        for score, external_id in group[1:]:
+            result.append((score * _NEWS_DEDUP_PENALTY, external_id))
+
+    result.sort(key=lambda pair: pair[0], reverse=True)
+    return [external_id for _, external_id in result]
 
 
 def _rank_articles(articles: list[Article]) -> list[Article]:

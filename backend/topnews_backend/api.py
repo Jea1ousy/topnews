@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import sys
 import traceback
@@ -15,7 +16,15 @@ from .fetchers import FetchError
 from .llm import LlmClient, LlmConfigError, LlmRequestError
 from .paper_figures import fetch_remote_image
 from .service import NewsAggregator
-from .storage import NewsStore, Page, article_to_dict, keyword_to_dict, paper_to_dict
+from .storage import (
+    NewsStore,
+    Page,
+    article_to_dict,
+    article_to_list_dict,
+    keyword_to_dict,
+    paper_to_dict,
+    paper_to_list_dict,
+)
 
 
 class TopNewsApi:
@@ -106,10 +115,10 @@ class TopNewsApi:
                 return self.write_binary(request, HTTPStatus.OK, image[0], image[1])
             if method == "GET" and parsed.path == "/v1/news":
                 page = self.store.list_articles(**self._page_args(params))
-                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
+                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page, slim=self._slim(params)))
             if method == "GET" and parsed.path == "/v1/recommendations":
                 page = self.store.recommend(**self._page_args(params))
-                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
+                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page, slim=self._slim(params)))
             if method == "POST" and parsed.path.startswith("/v1/articles/") and parsed.path.endswith("/ai-summary"):
                 external_id = urllib.parse.unquote(parsed.path[len("/v1/articles/") : -len("/ai-summary")].rstrip("/"))
                 return self._write_article_ai_summary(request, external_id, force=self._force_summary(params, body))
@@ -119,7 +128,7 @@ class TopNewsApi:
                     page_size=int(self._first(params, "pageSize", "20") or 20),
                     excluded_ids=self._csv(params, "exclude"),
                 )
-                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
+                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page, slim=self._slim(params)))
             if method == "POST" and parsed.path.startswith("/v1/papers/") and parsed.path.endswith("/ai-summary"):
                 external_id = urllib.parse.unquote(parsed.path[len("/v1/papers/") : -len("/ai-summary")].rstrip("/"))
                 return self._write_paper_ai_summary(request, external_id, force=self._force_summary(params, body))
@@ -155,12 +164,27 @@ class TopNewsApi:
                     query=self._first(params, "q"),
                     category=self._first(params, "category"),
                     excluded_ids=self._csv(params, "exclude"),
+                    force_refresh=self._flag(params, "refresh"),
                 )
-                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page))
+                return self.write_json(request, HTTPStatus.OK, self._page_to_dict(page, slim=self._slim(params)))
             if method == "POST" and parsed.path == "/v1/ingest":
                 limit = int(body.get("limit_per_source", self._first(params, "limitPerSource", "80")) or 80)
                 results = self.aggregator.ingest(limit_per_source=limit)
                 return self.write_json(request, HTTPStatus.OK, {"results": [asdict(result) for result in results]})
+            if method == "GET" and parsed.path.startswith("/v1/articles/"):
+                external_id = urllib.parse.unquote(parsed.path[len("/v1/articles/") :].rstrip("/"))
+                if external_id and "/" not in external_id:
+                    article = self.store.get_article(external_id)
+                    if not article:
+                        return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "article_not_found"})
+                    return self.write_json(request, HTTPStatus.OK, article_to_dict(article))
+            if method == "GET" and parsed.path.startswith("/v1/papers/"):
+                external_id = urllib.parse.unquote(parsed.path[len("/v1/papers/") :].rstrip("/"))
+                if external_id and "/" not in external_id and external_id not in {"recommendations", "ingest", "figures"}:
+                    paper = self.store.get_paper(external_id)
+                    if not paper:
+                        return self.write_json(request, HTTPStatus.NOT_FOUND, {"error": "paper_not_found"})
+                    return self.write_json(request, HTTPStatus.OK, paper_to_dict(paper))
             if method == "POST" and parsed.path == "/news/channel":
                 return self.write_json(request, HTTPStatus.OK, self._compat_channels())
             if method == "POST" and parsed.path == "/news/list":
@@ -186,6 +210,11 @@ class TopNewsApi:
             return
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request.send_header("Content-Type", "application/json; charset=utf-8")
+        request.send_header("Vary", "Accept-Encoding")
+        accept_encoding = str(request.headers.get("Accept-Encoding", ""))
+        if "gzip" in accept_encoding.lower() and len(data) >= _GZIP_MIN_BYTES:
+            data = gzip.compress(data, compresslevel=6)
+            request.send_header("Content-Encoding", "gzip")
         request.send_header("Content-Length", str(len(data)))
         request.end_headers()
         request.wfile.write(data)
@@ -314,9 +343,18 @@ class TopNewsApi:
         return [value.strip() for value in raw.split(",") if value.strip()]
 
     @staticmethod
-    def _page_to_dict(page: Page) -> dict[str, Any]:
+    def _flag(params: dict[str, list[str]], key: str) -> bool:
+        return str(TopNewsApi._first(params, key, "false")).lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _slim(params: dict[str, list[str]]) -> bool:
+        """fields=list 时列表返回瘦身负载；默认 full 兼容旧客户端。"""
+        return str(TopNewsApi._first(params, "fields", "full")).lower() == "list"
+
+    @staticmethod
+    def _page_to_dict(page: Page, slim: bool = False) -> dict[str, Any]:
         return {
-            "items": [_item_to_dict(item) for item in page.items],
+            "items": [_item_to_dict(item, slim=slim) for item in page.items],
             "page": page.page,
             "pageSize": page.page_size,
             "totalPage": page.total_page,
@@ -364,7 +402,10 @@ class TopNewsApi:
         }
 
 
-def _item_to_dict(item: Any) -> dict[str, object]:
+def _item_to_dict(item: Any, slim: bool = False) -> dict[str, object]:
     if hasattr(item, "abstract"):
-        return paper_to_dict(item)
-    return article_to_dict(item)
+        return paper_to_list_dict(item) if slim else paper_to_dict(item)
+    return article_to_list_dict(item) if slim else article_to_dict(item)
+
+
+_GZIP_MIN_BYTES = 860

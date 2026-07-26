@@ -21,6 +21,8 @@ class HomeViewModel : ViewModel() {
     private val repository = TopNewsBackendRepository()
     private val weatherRepository = WeatherRepository()
     private val pageSize = 20
+    private val detailRequestIds = mutableSetOf<String>()
+    private val detailLoadedIds = mutableSetOf<String>()
 
     private val _uiState = MutableStateFlow(
         HomeUiState(
@@ -189,6 +191,49 @@ class HomeViewModel : ViewModel() {
 
     fun loadTopNews() {
         refresh()
+    }
+
+    /** 列表为瘦身负载：打开文章时按需拉取全文并合并回信息流。 */
+    fun ensureArticleDetail(article: NewsArticle) {
+        if (article.html.isNotBlank()) return
+        if (article.id in detailLoadedIds) return
+        if (!detailRequestIds.add(article.id)) return
+        viewModelScope.launch {
+            val result = runCatching { repository.getArticleDetail(article) }
+            detailRequestIds.remove(article.id)
+            result.onSuccess { detail ->
+                detailLoadedIds.add(article.id)
+                if (detail != null) {
+                    _uiState.update { state ->
+                        state.copy(
+                            feedsByCategory = state.feedsByCategory.mapValues { (_, feed) ->
+                                if (feed.articles.none { item -> item.id == article.id }) {
+                                    feed
+                                } else {
+                                    feed.copy(
+                                        articles = feed.articles.map { item ->
+                                            if (item.id == article.id) mergeArticleDetail(item, detail) else item
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+            // 拉取失败静默降级：详情页回退展示列表 summary
+        }
+    }
+
+    private fun mergeArticleDetail(base: NewsArticle, detail: NewsArticle): NewsArticle {
+        return base.copy(
+            description = detail.description.ifBlank { base.description },
+            content = detail.content.ifBlank { base.content },
+            html = detail.html.ifBlank { base.html },
+            aiSummary = detail.aiSummary ?: base.aiSummary,
+            imageUrl = detail.imageUrl ?: base.imageUrl,
+            imageUrls = if (detail.imageUrls.isNotEmpty()) detail.imageUrls else base.imageUrls
+        )
     }
 
     fun summarizeArticle(article: NewsArticle) {

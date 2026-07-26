@@ -1,5 +1,9 @@
 package com.example.topnews.domain.model
 
+import androidx.compose.runtime.Immutable
+
+/** 标记为 @Immutable：让 Compose 跳过未变化的列表项重组。 */
+@Immutable
 data class NewsArticle(
     val id: String,
     val title: String,

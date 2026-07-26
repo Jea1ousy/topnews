@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from .academic import fetch_arxiv_papers
 from .config import AppConfig, SourceConfig
-from .fetchers import FetchError, fetch_source
+from .fetchers import FetchError, enrich_articles, fetch_source
 from .paper_figures import fetch_arxiv_primary_figure, fetch_paper_figure_image
 from .storage import NewsStore
 
@@ -37,6 +37,18 @@ class NewsAggregator:
                     timeout=self.config.request_timeout,
                     user_agent=self.config.user_agent,
                     limit=effective_limit,
+                    enrich=False,
+                )
+                # 增量丰富：已入库文章跳过详情页抓取（upsert 会保留更长正文）
+                known_ids = self.store.existing_external_ids(
+                    [article.external_id for article in articles if article.external_id]
+                )
+                articles = enrich_articles(
+                    articles,
+                    source,
+                    timeout=self.config.request_timeout,
+                    user_agent=self.config.user_agent,
+                    skip_ids=known_ids,
                 )
                 stored = self.store.upsert_articles(articles)
                 results.append(IngestResult(source=source.name, ok=True, fetched=len(articles), stored=stored))
@@ -113,6 +125,16 @@ class NewsAggregator:
             fetched=fetched,
             stored=stored,
             error="; ".join(errors[:3]) or None,
+        )
+
+    def apply_retention(self) -> IngestResult:
+        summary = self.store.apply_retention()
+        return IngestResult(
+            source="retention",
+            ok=True,
+            fetched=summary.get("deleted_articles", 0) + summary.get("deleted_papers", 0),
+            stored=summary.get("stripped_articles", 0),
+            error=None,
         )
 
     @property

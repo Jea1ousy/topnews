@@ -24,6 +24,7 @@ class ScheduleOptions:
     news_interval_minutes: float = 10.0
     papers_interval_minutes: float = 60.0
     figures_interval_minutes: float = 180.0
+    retention_interval_minutes: float = 1440.0
     run_on_start: bool = True
     idle_sleep_seconds: float = 30.0
 
@@ -161,6 +162,11 @@ def _build_jobs(
             )
         ],
         run_at_start=schedule_options.run_on_start and schedule_options.papers_interval_minutes <= 0,
+    )
+    add_job(
+        "retention",
+        schedule_options.retention_interval_minutes,
+        lambda: [aggregator.apply_retention()],
     )
     return jobs
 

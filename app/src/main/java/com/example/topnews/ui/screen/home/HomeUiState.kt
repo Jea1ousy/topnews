@@ -1,5 +1,6 @@
 package com.example.topnews.ui.screen.home
 
+import androidx.compose.runtime.Immutable
 import com.example.topnews.domain.model.AcademicKeyword
 import com.example.topnews.domain.model.NewsArticle
 
@@ -43,6 +44,7 @@ data class HomeUiState(
     }
 }
 
+@Immutable
 data class CategoryFeedState(
     val articles: List<NewsArticle> = emptyList(),
     val isLoading: Boolean = false,
@@ -55,6 +57,7 @@ data class CategoryFeedState(
     val seenArticleIds: Set<String> = emptySet()
 )
 
+@Immutable
 data class AiSummaryState(
     val summary: String? = null,
     val isLoading: Boolean = false,
