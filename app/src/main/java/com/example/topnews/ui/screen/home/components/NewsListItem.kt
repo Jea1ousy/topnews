@@ -38,7 +38,6 @@ import com.example.topnews.domain.model.NewsArticle
 enum class NewsCardType {
     HERO_IMAGE,
     THREE_IMAGE,
-    FLASH,
     THUMBNAIL,
     PLAIN_TEXT
 }
@@ -51,16 +50,13 @@ fun getNewsCardType(article: NewsArticle, index: Int = -1): NewsCardType {
     if (images.size >= 3) {
         return NewsCardType.THREE_IMAGE
     }
-    if (isFlashSource(article.source) && images.isEmpty()) {
-        return NewsCardType.FLASH
-    }
     if (images.isNotEmpty()) {
         return NewsCardType.THUMBNAIL
     }
     return NewsCardType.PLAIN_TEXT
 }
 
-private fun isFlashSource(source: String): Boolean {
+fun isFlashSource(source: String): Boolean {
     return source.contains("电报") || source.contains("快讯")
 }
 
@@ -99,11 +95,6 @@ fun NewsListItem(
                 ThreeImageCardContent(
                     article = article,
                     images = validImages.take(3)
-                )
-            }
-            NewsCardType.FLASH -> {
-                FlashCardContent(
-                    article = article
                 )
             }
             NewsCardType.THUMBNAIL -> {
@@ -167,30 +158,12 @@ private fun HeroImageCardContent(
                 contentScale = ContentScale.Crop
             )
 
-            if (article.isTop) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(MaterialTheme.colorScheme.primary)
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = "置顶",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
             if (article.videoDuration != null) {
                 VideoOverlay(duration = article.videoDuration)
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
-        ArticleMeta(article = article, showTopBadge = !article.isTop)
+        ArticleMeta(article = article)
     }
 }
 
@@ -246,67 +219,6 @@ private fun ThreeImageCardContent(
     }
 }
 
-/** 快讯卡（7x24 短讯电报风） */
-@Composable
-private fun FlashCardContent(
-    article: NewsArticle
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 11.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
-                    .padding(horizontal = 5.dp, vertical = 1.dp)
-            ) {
-                Text(
-                    text = "快讯",
-                    color = MaterialTheme.colorScheme.error,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(modifier = Modifier.width(6.dp))
-            SourceAvatar(source = article.source, size = 16.dp)
-            Spacer(modifier = Modifier.width(5.dp))
-            val sourceText = compactSourceName(article.source)
-            Text(
-                text = "$sourceText · ${article.timeText}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = article.title,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 16.sp,
-            lineHeight = 23.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        val summaryText = article.description.trim()
-        if (summaryText.isNotBlank() && summaryText != article.title.trim()) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = summaryText,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
 /** 经典左文右小图卡 */
 @Composable
 private fun ThumbnailCardContent(
@@ -316,14 +228,14 @@ private fun ThumbnailCardContent(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = if (article.isTop) 6.dp else 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = article.title,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontSize = if (article.isTop) 17.sp else 18.sp,
+                fontSize = 17.sp,
                 lineHeight = 24.sp,
                 fontWeight = FontWeight.Normal,
                 maxLines = 2,
@@ -337,7 +249,7 @@ private fun ThumbnailCardContent(
     }
 }
 
-/** 经典纯文卡 */
+/** 经典纯文卡（普通无图与快讯短讯均遵循此统一布局） */
 @Composable
 private fun PlainTextCardContent(
     article: NewsArticle
@@ -345,12 +257,12 @@ private fun PlainTextCardContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = if (article.isTop) 6.dp else 12.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         Text(
             text = article.title,
             color = MaterialTheme.colorScheme.onSurface,
-            fontSize = if (article.isTop) 17.sp else 18.sp,
+            fontSize = 17.sp,
             lineHeight = 24.sp,
             fontWeight = FontWeight.Normal,
             maxLines = 2,
@@ -362,12 +274,20 @@ private fun PlainTextCardContent(
 }
 
 @Composable
-private fun ArticleMeta(article: NewsArticle, showTopBadge: Boolean = true) {
+private fun ArticleMeta(article: NewsArticle) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        if (article.isTop && showTopBadge) {
+        if (article.isTop) {
             Text(
                 text = "置顶",
                 color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+        } else if (isFlashSource(article.source)) {
+            Text(
+                text = "快讯",
+                color = MaterialTheme.colorScheme.error,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
