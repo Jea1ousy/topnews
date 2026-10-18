@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -78,6 +79,25 @@ fun NewsList(
                         .padding(24.dp),
                     color = MaterialTheme.colorScheme.primary
                 )
+            }
+        }
+
+        articles.isEmpty() && !isRefreshing -> {
+            PullToRefreshBox(
+                isRefreshing = isRefreshing,
+                onRefresh = onRefresh,
+                modifier = modifier.fillMaxSize()
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "暂无相关新闻，下拉刷新试试",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp
+                    )
+                }
             }
         }
 
@@ -172,13 +192,14 @@ fun NewsList(
                         }
                     }
 
-                    items(
+                    itemsIndexed(
                         items = articles,
-                        key = { article -> article.id },
-                        contentType = { "news-item" }
-                    ) { article ->
+                        key = { _, article -> article.id },
+                        contentType = { index, article -> getNewsCardType(article, index).name }
+                    ) { index, article ->
                         NewsListItem(
                             article = article,
+                            index = index,
                             onClick = onArticleClick
                         )
                     }

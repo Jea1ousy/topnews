@@ -1435,6 +1435,7 @@ def article_to_list_dict(article: Article) -> dict[str, object]:
             if article.image_url
             else None
         ),
+        "image_urls": article.image_urls[:3],
         "published_at": article.published_at,
         "fetched_at": article.fetched_at,
         "ai_summary": article.ai_summary,
