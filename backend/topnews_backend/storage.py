@@ -224,6 +224,7 @@ class NewsStore:
             _ensure_column(connection, "articles", "content_len", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "articles", "title_fingerprint", "TEXT NOT NULL DEFAULT ''")
             connection.execute("UPDATE articles SET category = '时政' WHERE category = '国内'")
+            connection.execute("UPDATE articles SET category = '时政' WHERE source = '新华社首页' AND category = '综合'")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_region ON articles(region)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at)")
