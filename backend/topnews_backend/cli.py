@@ -50,7 +50,13 @@ def main() -> None:
     retention_parser.add_argument("--article-max-age-days", type=int, default=30)
     retention_parser.add_argument("--article-strip-age-days", type=int, default=14)
     retention_parser.add_argument("--paper-max-age-days", type=int, default=90)
+    retention_parser.add_argument("--paper-strip-age-days", type=int, default=30)
     retention_parser.add_argument("--no-vacuum", action="store_true")
+
+    compress_parser = subparsers.add_parser("compress-images", help="Batch compress and strip existing stored images")
+    compress_parser.add_argument("--paper-strip-age-days", type=int, default=30)
+    compress_parser.add_argument("--batch-size", type=int, default=100)
+    compress_parser.add_argument("--no-vacuum", action="store_true")
 
     keyword_parser = subparsers.add_parser("keyword-add", help="Add an academic keyword rule")
     keyword_parser.add_argument("rule")
@@ -125,6 +131,17 @@ def main() -> None:
                 article_max_age_days=args.article_max_age_days,
                 article_strip_age_days=args.article_strip_age_days,
                 paper_max_age_days=args.paper_max_age_days,
+                paper_strip_age_days=args.paper_strip_age_days,
+                vacuum=not args.no_vacuum,
+            )
+        )
+        return
+
+    if args.command == "compress-images":
+        print(
+            store.compress_existing_images(
+                paper_strip_age_days=args.paper_strip_age_days,
+                batch_size=args.batch_size,
                 vacuum=not args.no_vacuum,
             )
         )

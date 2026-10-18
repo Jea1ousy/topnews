@@ -39,6 +39,50 @@ def pillow_available() -> bool:
     return _PILLOW_AVAILABLE
 
 
+def compress_image_for_storage(
+    data: bytes,
+    mime_type: str,
+    max_edge: int = 1024,
+    quality: int = 80,
+) -> tuple[bytes, str]:
+    """入库前主动降采样与压缩。
+
+    - 等比缩小至长边不超过 max_edge（默认 1024px，兼顾平板/大屏与存储）
+    - 统一转为 WebP（优先）或 JPEG，quality=80
+    - 若压缩后体积未减少或无法处理，保留原数据
+    """
+    if not _PILLOW_AVAILABLE or not data:
+        return data, mime_type
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            w, h = image.size
+            scale = min(1.0, max_edge / max(w, h))
+            if scale < 1.0:
+                target_w = max(1, round(w * scale))
+                target_h = max(1, round(h * scale))
+                image = image.resize((target_w, target_h), Image.LANCZOS)
+
+            mode = "RGBA" if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info) else "RGB"
+            converted = image.convert(mode)
+            buffer = io.BytesIO()
+            format_name = "WEBP"
+            target_mime = "image/webp"
+            try:
+                converted.save(buffer, format_name, quality=quality, method=4)
+            except Exception:
+                buffer = io.BytesIO()
+                converted.convert("RGB").save(buffer, "JPEG", quality=quality, optimize=True)
+                target_mime = "image/jpeg"
+
+            compressed = buffer.getvalue()
+            if len(compressed) < len(data):
+                return compressed, target_mime
+    except Exception:
+        pass
+    return data, mime_type
+
+
 def normalize_width(raw: str | None) -> int | None:
     """把查询参数里的 w 归一化到最近的档位；非法值返回 None（= 返回原图）。"""
     if not raw:

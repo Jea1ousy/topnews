@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 
 from .fetchers import FetchError
+from .images import compress_image_for_storage
 
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -139,6 +140,7 @@ def fetch_remote_image(
         raise FetchError(f"Unsupported remote image type: {mime_type}")
     if not data:
         raise FetchError(f"Remote image is empty: {image_url}")
+    data, mime_type = compress_image_for_storage(data, mime_type)
     return PaperFigureImage(data=data, mime_type=mime_type)
 
 

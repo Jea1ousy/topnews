@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
+from topnews_backend.academic import RawPaper
 from topnews_backend.fetchers import RawArticle  # noqa: E402
 from topnews_backend.storage import NewsStore  # noqa: E402
 
@@ -81,5 +82,34 @@ with store.connect() as conn:
 print("\n=== 3) 保留任务（article_days=1）===")
 print(f"  文章数 {before} -> {after}   返回: {removed}")
 assert after < before, "3 天前的文章没有被保留任务清掉"
+
+# --- 4) 论文图片剥离保留任务 ---
+raw_paper = RawPaper(
+    title="测试论文",
+    authors=["Author A"],
+    abstract="摘要内容",
+    source="arXiv",
+    url="https://arxiv.org/abs/test",
+    pdf_url=None,
+    categories=["cs.AI"],
+    published_at=three_days_ago,
+    updated_at=three_days_ago,
+    external_id="paper-old",
+)
+store.upsert_papers([raw_paper])
+store.update_paper_figure(
+    "paper-old",
+    "https://arxiv.org/fig.png",
+    "caption",
+    image_data=b"dummy image data" * 100,
+    image_mime_type="image/jpeg",
+)
+assert store.get_paper_image("paper-old") is not None, "论文图片未能写入"
+
+retention_res = store.apply_retention(paper_strip_age_days=1, vacuum=False)
+print("\n=== 4) 论文图片剥离（paper_strip_days=1）===")
+print(f"  返回: {retention_res}")
+assert retention_res.get("stripped_papers", 0) >= 1, "论文图片未被剥离"
+assert store.get_paper_image("paper-old") is None, "旧论文图片应已被置空"
 
 print("\nALL CHECKS PASSED")

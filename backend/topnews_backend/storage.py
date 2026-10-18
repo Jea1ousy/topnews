@@ -25,6 +25,7 @@ from .academic import (
     score_paper,
 )
 from .fetchers import RawArticle
+from .images import compress_image_for_storage
 from .summary import build_summary
 
 
@@ -781,6 +782,7 @@ class NewsStore:
         image_mime_type: str,
         image_url: str | None = None,
     ) -> bool:
+        image_data, image_mime_type = compress_image_for_storage(image_data, image_mime_type)
         cached_at = datetime.now(timezone.utc).isoformat()
         image_clause = ", image_url = ?" if image_url else ""
         params: tuple[object, ...] = (
@@ -909,6 +911,8 @@ class NewsStore:
         image_data: bytes | None = None,
         image_mime_type: str | None = None,
     ) -> bool:
+        if image_data:
+            image_data, image_mime_type = compress_image_for_storage(image_data, image_mime_type or "image/jpeg")
         checked_at = datetime.now(timezone.utc).isoformat()
         cached_at = checked_at if image_data else None
         with self.connect() as connection:
@@ -1232,18 +1236,21 @@ class NewsStore:
         article_max_age_days: int = 30,
         article_strip_age_days: int = 14,
         paper_max_age_days: int = 90,
+        paper_strip_age_days: int = 30,
         vacuum: bool = True,
     ) -> dict[str, int]:
         """数据保留策略，控制 SQLite 体积：
 
         - 删除 30 天前的文章（时间衰减下早已不可能进入推荐）
         - 14 天前的文章置空 content_html 与图片 BLOB（正文文本保留）
+        - 30 天前的论文置空图片 BLOB（论文不在推荐候选窗口内）
         - 删除 90 天前的论文
-        - 有删除时执行 VACUUM 回收磁盘
+        - 有删除或剥离时执行 VACUUM 回收磁盘
         """
         now = datetime.now(timezone.utc)
         cutoff_delete = (now - timedelta(days=article_max_age_days)).isoformat()
         cutoff_strip = (now - timedelta(days=article_strip_age_days)).isoformat()
+        cutoff_paper_strip = (now - timedelta(days=paper_strip_age_days)).isoformat()
         cutoff_paper = (now - timedelta(days=paper_max_age_days)).isoformat()
 
         with self.connect() as connection:
@@ -1260,6 +1267,15 @@ class NewsStore:
                 """,
                 (cutoff_strip,),
             ).rowcount
+            stripped_papers = connection.execute(
+                """
+                UPDATE papers
+                SET image_data = NULL, image_mime_type = NULL, image_cached_at = NULL
+                WHERE COALESCE(published_at, fetched_at) < ?
+                  AND image_data IS NOT NULL
+                """,
+                (cutoff_paper_strip,),
+            ).rowcount
             deleted_papers = connection.execute(
                 "DELETE FROM papers WHERE COALESCE(published_at, fetched_at) < ?",
                 (cutoff_paper,),
@@ -1267,10 +1283,10 @@ class NewsStore:
 
         if deleted_articles or stripped_articles:
             self.invalidate_news_recommendation_cache()
-        if deleted_papers:
+        if deleted_papers or stripped_papers:
             self.invalidate_paper_recommendation_cache()
-        if vacuum and (deleted_articles or deleted_papers or stripped_articles):
-            vacuum_connection = sqlite3.connect(self.database_path, timeout=30)
+        if vacuum and (deleted_articles or deleted_papers or stripped_articles or stripped_papers):
+            vacuum_connection = sqlite3.connect(self.database_path, timeout=60)
             try:
                 vacuum_connection.execute("VACUUM")
             finally:
@@ -1279,7 +1295,75 @@ class NewsStore:
         return {
             "deleted_articles": deleted_articles,
             "stripped_articles": stripped_articles,
+            "stripped_papers": stripped_papers,
             "deleted_papers": deleted_papers,
+        }
+
+    def compress_existing_images(
+        self,
+        paper_strip_age_days: int = 30,
+        batch_size: int = 100,
+        vacuum: bool = True,
+    ) -> dict[str, int]:
+        """存量图片批量瘦身与物理页回收。"""
+        now = datetime.now(timezone.utc)
+        cutoff_paper_strip = (now - timedelta(days=paper_strip_age_days)).isoformat()
+
+        with self.connect() as connection:
+            stripped_papers = connection.execute(
+                """
+                UPDATE papers
+                SET image_data = NULL, image_mime_type = NULL, image_cached_at = NULL
+                WHERE COALESCE(published_at, fetched_at) < ?
+                  AND image_data IS NOT NULL
+                """,
+                (cutoff_paper_strip,),
+            ).rowcount
+            connection.commit()
+
+            compressed_papers = 0
+            last_id = 0
+            while True:
+                rows = connection.execute(
+                    """
+                    SELECT id, image_data, image_mime_type
+                    FROM papers
+                    WHERE id > ? AND image_data IS NOT NULL
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    (last_id, batch_size),
+                ).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    last_id = row["id"]
+                    raw_data = bytes(row["image_data"])
+                    raw_mime = row["image_mime_type"] or "image/jpeg"
+                    if raw_mime == "image/webp" and len(raw_data) < 150 * 1024:
+                        continue
+                    new_data, new_mime = compress_image_for_storage(raw_data, raw_mime)
+                    if len(new_data) < len(raw_data):
+                        connection.execute(
+                            "UPDATE papers SET image_data = ?, image_mime_type = ? WHERE id = ?",
+                            (new_data, new_mime, last_id),
+                        )
+                        compressed_papers += 1
+                connection.commit()
+
+        if stripped_papers or compressed_papers:
+            self.invalidate_paper_recommendation_cache()
+
+        if vacuum:
+            vacuum_connection = sqlite3.connect(self.database_path, timeout=120)
+            try:
+                vacuum_connection.execute("VACUUM")
+            finally:
+                vacuum_connection.close()
+
+        return {
+            "stripped_papers": stripped_papers,
+            "compressed_papers": compressed_papers,
         }
 
     def _filters(
