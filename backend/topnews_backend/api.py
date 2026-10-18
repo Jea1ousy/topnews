@@ -79,7 +79,7 @@ class TopNewsApi:
                         "title": "发现新版本 v1.1.0",
                         "changelog": "1. 丰富卡片样式：新增宽幅大图、三图卡、快讯电报风\n2. 修复时政频道与空状态占位\n3. 优化图片加载与内存占用，流畅度大幅提升",
                         "downloadUrl": "http://193.112.193.205/download/topnews.apk",
-                        "forceUpdate": false,
+                        "forceUpdate": False,
                     },
                 )
             if method == "GET" and parsed.path == "/v1/sources":
