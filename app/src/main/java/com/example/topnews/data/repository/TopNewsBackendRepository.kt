@@ -11,6 +11,7 @@ import com.example.topnews.data.remote.dto.BackendNewsPageResponse
 import com.example.topnews.data.remote.dto.BackendPaperDto
 import com.example.topnews.data.remote.dto.BackendPaperPageResponse
 import com.example.topnews.domain.model.AcademicKeyword
+import com.example.topnews.domain.model.AppUpdateInfo
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.domain.model.NewsPage
 import com.example.topnews.domain.repository.NewsRepository
@@ -75,6 +76,23 @@ class TopNewsBackendRepository(
         }
         return response.summary?.takeIf { it.isNotBlank() }
             ?: error("AI总结返回为空")
+    }
+
+    suspend fun checkAppUpdate(): AppUpdateInfo? {
+        return runCatching {
+            require(baseUrl.isNotBlank()) { "缺少 TOPNEWS_BACKEND_BASE_URL" }
+            val response = api.getAppVersion()
+            val remoteVersionCode = response.versionCode ?: return@runCatching null
+            val downloadUrl = response.downloadUrl?.takeIf { it.isNotBlank() } ?: return@runCatching null
+            AppUpdateInfo(
+                versionCode = remoteVersionCode,
+                versionName = response.versionName.orEmpty().ifBlank { "v$remoteVersionCode" },
+                title = response.title.orEmpty().ifBlank { "发现新版本" },
+                changelog = response.changelog.orEmpty(),
+                downloadUrl = resolveBackendUrl(downloadUrl) ?: downloadUrl,
+                forceUpdate = response.forceUpdate ?: false
+            )
+        }.getOrNull()
     }
 
     override suspend fun getTopNews(

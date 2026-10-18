@@ -2,7 +2,9 @@ package com.example.topnews.ui.screen.home
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +42,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -49,6 +53,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.topnews.data.location.DeviceLocationProvider
 import com.example.topnews.domain.model.AcademicKeyword
+import com.example.topnews.domain.model.AppUpdateInfo
 import com.example.topnews.domain.model.NewsArticle
 import com.example.topnews.ui.screen.home.components.CategoryTabs
 import com.example.topnews.ui.screen.home.components.HomeHeader
@@ -231,6 +236,68 @@ fun HomeScreen(
             onDismiss = { showAcademicKeywords = false }
         )
     }
+
+    uiState.appUpdateInfo?.let { updateInfo ->
+        AppUpdateDialog(
+            updateInfo = updateInfo,
+            onConfirm = {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.downloadUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                runCatching { context.startActivity(intent) }
+                if (!updateInfo.forceUpdate) {
+                    viewModel.dismissAppUpdate()
+                }
+            },
+            onDismiss = viewModel::dismissAppUpdate
+        )
+    }
+}
+
+@Composable
+private fun AppUpdateDialog(
+    updateInfo: AppUpdateInfo,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = {
+            if (!updateInfo.forceUpdate) onDismiss()
+        },
+        title = {
+            Text(text = updateInfo.title, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column {
+                if (updateInfo.changelog.isNotBlank()) {
+                    Text(
+                        text = updateInfo.changelog,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+                Text(
+                    text = "点击「立即更新」将在浏览器中下载最新安装包覆盖安装。",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 13.sp
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(text = "立即更新")
+            }
+        },
+        dismissButton = if (!updateInfo.forceUpdate) {
+            {
+                TextButton(onClick = onDismiss) {
+                    Text(text = "稍后再说")
+                }
+            }
+        } else null
+    )
 }
 
 @Composable

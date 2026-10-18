@@ -142,3 +142,18 @@ data class BackendAiSummaryResponse(
     @SerializedName("cached")
     val cached: Boolean?
 )
+
+data class BackendAppVersionDto(
+    @SerializedName("versionCode")
+    val versionCode: Int?,
+    @SerializedName("versionName")
+    val versionName: String?,
+    @SerializedName("title")
+    val title: String?,
+    @SerializedName("changelog")
+    val changelog: String?,
+    @SerializedName("downloadUrl")
+    val downloadUrl: String?,
+    @SerializedName("forceUpdate")
+    val forceUpdate: Boolean?
+)

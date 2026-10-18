@@ -7,6 +7,7 @@ import com.example.topnews.data.remote.dto.BackendPaperPageResponse
 import com.example.topnews.data.remote.dto.AddAcademicKeywordRequest
 import com.example.topnews.data.remote.dto.BackendAcademicKeywordDto
 import com.example.topnews.data.remote.dto.BackendAiSummaryResponse
+import com.example.topnews.data.remote.dto.BackendAppVersionDto
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -91,4 +92,7 @@ interface TopNewsBackendApi {
     suspend fun deleteAcademicKeyword(
         @Path("id") id: Int
     )
+
+    @GET("v1/app/version")
+    suspend fun getAppVersion(): BackendAppVersionDto
 }

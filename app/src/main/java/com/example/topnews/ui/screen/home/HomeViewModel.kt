@@ -34,6 +34,20 @@ class HomeViewModel : ViewModel() {
     init {
         loadFirstPage(category = DEFAULT_CATEGORY, forceRefresh = false)
         loadAcademicKeywords()
+        checkAppUpdate()
+    }
+
+    fun checkAppUpdate() {
+        viewModelScope.launch {
+            val update = repository.checkAppUpdate() ?: return@launch
+            if (update.versionCode > com.example.topnews.BuildConfig.VERSION_CODE) {
+                _uiState.update { it.copy(appUpdateInfo = update) }
+            }
+        }
+    }
+
+    fun dismissAppUpdate() {
+        _uiState.update { it.copy(appUpdateInfo = null) }
     }
 
     fun selectCategory(category: String) {

@@ -30,8 +30,8 @@ android {
         applicationId = "com.example.topnews"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField(
@@ -56,11 +56,24 @@ android {
         )
     }
 
+    signingConfigs {
+        create("release") {
+            val debugKey = file(System.getProperty("user.home") + "/.android/debug.keystore")
+            if (debugKey.exists()) {
+                storeFile = debugKey
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             // R8 压缩混淆 + 资源裁剪：减包体、提升冷启动（keep 规则见 proguard-rules.pro）
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

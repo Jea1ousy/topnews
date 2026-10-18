@@ -69,6 +69,19 @@ class TopNewsApi:
             body = self._read_body(request)
             if method == "GET" and parsed.path == "/health":
                 return self.write_json(request, HTTPStatus.OK, {"ok": True, "time": datetime.now(timezone.utc).isoformat()})
+            if method == "GET" and parsed.path == "/v1/app/version":
+                return self.write_json(
+                    request,
+                    HTTPStatus.OK,
+                    {
+                        "versionCode": 2,
+                        "versionName": "1.1.0",
+                        "title": "发现新版本 v1.1.0",
+                        "changelog": "1. 丰富卡片样式：新增宽幅大图、三图卡、快讯电报风\n2. 修复时政频道与空状态占位\n3. 优化图片加载与内存占用，流畅度大幅提升",
+                        "downloadUrl": "http://193.112.193.205/download/topnews.apk",
+                        "forceUpdate": false,
+                    },
+                )
             if method == "GET" and parsed.path == "/v1/sources":
                 return self.write_json(request, HTTPStatus.OK, [asdict(source) for source in self.aggregator.enabled_sources])
             if method == "GET" and parsed.path == "/v1/categories":

@@ -2,6 +2,7 @@ package com.example.topnews.ui.screen.home
 
 import androidx.compose.runtime.Immutable
 import com.example.topnews.domain.model.AcademicKeyword
+import com.example.topnews.domain.model.AppUpdateInfo
 import com.example.topnews.domain.model.NewsArticle
 
 
@@ -15,7 +16,8 @@ data class HomeUiState(
     val aiSummaries: Map<String, AiSummaryState> = emptyMap(),
     val academicKeywords: List<AcademicKeyword> = emptyList(),
     val isLoadingAcademicKeywords: Boolean = false,
-    val academicKeywordError: String? = null
+    val academicKeywordError: String? = null,
+    val appUpdateInfo: AppUpdateInfo? = null
 ) {
     val selectedFeed: CategoryFeedState
         get() = feedFor(selectedCategory)
