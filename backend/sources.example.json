@@ -26,9 +26,9 @@
       "category": "国际"
     },
     {
-      "name": "联合早报中国即时",
-      "kind": "rss",
-      "url": "https://rsshub.rssforever.com/zaobao/realtime/china",
+      "name": "联合早报中国",
+      "kind": "portal",
+      "url": "https://www.zaobao.com/news/china",
       "region": "境外",
       "category": "时政"
     },

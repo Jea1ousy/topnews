@@ -754,12 +754,12 @@ def _is_portal_article_link(title: str, url: str, source: SourceConfig) -> bool:
         if not re.search(r"\d", path):
             return False
 
-    if "zaobao.com.sg" in source_host:
-        if host and not host.endswith("zaobao.com.sg"):
+    if "zaobao.com" in source_host:
+        if host and not (host.endswith("zaobao.com.sg") or host.endswith("zaobao.com")):
             return False
         if path in {"realtime/china", "news/china", "news"}:
             return False
-        if path.startswith(("shop", "zshop", "advertise", "subscription", "about", "contact")):
+        if path.startswith(("shop", "zshop", "advertise", "subscription", "about", "contact", "newsletter")):
             return False
         if not re.search(r"\d{6,}", path):
             return False
@@ -883,6 +883,7 @@ PORTAL_NON_ARTICLE_TITLES = {
     "zaobao.com",
     "zshop 集品店",
     "新报业媒体网站",
+    "订阅新闻速递",
 }
 
 PORTAL_NON_ARTICLE_PATH_PREFIXES = (
